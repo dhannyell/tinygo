@@ -517,6 +517,13 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 				"--image-base", "0x400000",
 			)
 			spec.RTLib = "compiler-rt"
+			// The threads scheduler is opt-in. COFF links report undefined
+			// symbols in unused code, so add its files only when it is used.
+			if options.Scheduler == "threads" {
+				spec.ExtraFiles = append(spec.ExtraFiles,
+					"src/internal/futex/futex_windows.c",
+					"src/internal/task/task_threads.c")
+			}
 		case "arm64":
 			spec.LDFlags = append(spec.LDFlags,
 				"-m", "arm64pe",
@@ -530,7 +537,8 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 			"--no-dynamicbase",
 		)
 		spec.ExtraFiles = append(spec.ExtraFiles,
-			"src/runtime/runtime_windows.c")
+			"src/runtime/runtime_windows.c",
+			"src/runtime/math_windows.c")
 	case "wasm", "wasip1", "wasip2":
 		return nil, fmt.Errorf("GOOS=%s but GOARCH is unset. Please set GOARCH to wasm", options.GOOS)
 	default:

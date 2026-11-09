@@ -43,5 +43,9 @@ func main() {
 		println("  tan:      ", math.Tan(n))
 		println("  tanh:     ", math.Tanh(n))
 		println("  trunc:    ", math.Trunc(n))
+		// LLVM can join these two calls into one sincos call. The argument
+		// differs from the calls above, so they are not reused.
+		s, c := math.Sin(2*n), math.Cos(2*n)
+		println("  sincos:   ", s, c)
 	}
 }

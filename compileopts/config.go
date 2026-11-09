@@ -35,6 +35,7 @@ var libVersions = map[string]int{
 	"picolibc":     2,
 	"wasmbuiltins": 1,
 	"compiler-rt":  1,
+	"mingw-w64":    1,
 }
 
 // Config keeps all configuration affecting the build in a single struct.
@@ -299,8 +300,10 @@ func (c *Config) MaxStackAlloc() uint64 {
 		return c.Target.MaxStackAlloc
 	}
 	if c.StackSize() >= 16*1024 {
-		// OS thread stacks end in a guard page.
-		if c.Scheduler() == "threads" && c.GOARCH() != "wasm" {
+		// OS thread stacks end in a guard page. On windows/amd64, ___chkstk_ms
+		// checks large frames against the goroutine stack.
+		windowsTasks := c.Scheduler() == "tasks" && c.GOOS() == "windows" && c.GOARCH() == "amd64"
+		if (c.Scheduler() == "threads" || windowsTasks) && c.GOARCH() != "wasm" {
 			return max(1024, c.StackSize()/8)
 		}
 		return 1024

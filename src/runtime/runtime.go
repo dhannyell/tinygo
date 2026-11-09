@@ -28,6 +28,9 @@ func callMain()
 
 func GOMAXPROCS(n int) int {
 	// Note: setting GOMAXPROCS is ignored.
+	if hasParallelism {
+		return NumCPU()
+	}
 	return 1
 }
 

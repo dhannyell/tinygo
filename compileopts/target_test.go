@@ -20,6 +20,8 @@ func TestConfigMaxStackAlloc(t *testing.T) {
 		{"threads default stack", &TargetSpec{GOARCH: "amd64", Scheduler: "threads", DefaultStackSize: 64 * 1024}, 0, 8192},
 		{"threads large stack", &TargetSpec{GOARCH: "amd64", Scheduler: "threads", DefaultStackSize: 64 * 1024}, 1024 * 1024, 128 * 1024},
 		{"tasks has no guard page", &TargetSpec{GOOS: "linux", GOARCH: "amd64", Scheduler: "tasks", DefaultStackSize: 64 * 1024}, 0, 1024},
+		{"windows tasks checks large frames", &TargetSpec{GOOS: "windows", GOARCH: "amd64", Scheduler: "tasks", DefaultStackSize: 64 * 1024}, 0, 8192},
+		{"windows arm64 tasks has no check", &TargetSpec{GOOS: "windows", GOARCH: "arm64", Scheduler: "tasks", DefaultStackSize: 64 * 1024}, 0, 1024},
 		{"wasm has no guard page", &TargetSpec{GOARCH: "wasm", Scheduler: "threads", DefaultStackSize: 64 * 1024}, 0, 1024},
 		{"target override", &TargetSpec{GOARCH: "amd64", Scheduler: "threads", DefaultStackSize: 64 * 1024, MaxStackAlloc: 512}, 0, 512},
 	}

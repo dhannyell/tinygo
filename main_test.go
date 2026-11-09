@@ -804,6 +804,56 @@ func TestBuild(t *testing.T) {
 	}
 }
 
+// TestWindowsCABI checks structs by value at the C boundary on windows/amd64,
+// that C code runs on the system stack, and that runtime.Callers walks
+// through C frames.
+func TestWindowsCABI(t *testing.T) {
+	t.Parallel()
+	options := optionsFromOSARCH("windows/amd64", sema)
+	emuCheck(t, options)
+	runTest("win64abi/", options, t, nil, nil)
+}
+
+// TestWindowsMath runs math.go on windows/amd64. LLVM joins sin and cos into
+// a sincos call, which the ucrt does not have.
+func TestWindowsMath(t *testing.T) {
+	t.Parallel()
+	options := optionsFromOSARCH("windows/amd64", sema)
+	emuCheck(t, options)
+	runTest("math.go", options, t, nil, nil)
+}
+
+// TestWindowsThreads runs concurrency tests with the threads scheduler on
+// windows/amd64. threadsgc.go needs the GC to scan the stacks and the
+// registers of the threads that it stops.
+func TestWindowsThreads(t *testing.T) {
+	t.Parallel()
+	options := optionsFromOSARCH("windows/amd64", sema)
+	options.Scheduler = "threads"
+	emuCheck(t, options)
+	runPlatTests(options, []string{"atomic.go", "channel.go", "gc.go", "threadsgc.go", "timers.go"}, t)
+}
+
+// TestWindowsStackOverflow checks that a large frame past the end of a
+// goroutine stack stops the program on windows/amd64.
+func TestWindowsStackOverflow(t *testing.T) {
+	t.Parallel()
+	options := optionsFromOSARCH("windows/amd64", sema)
+	emuCheck(t, options)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := &bytes.Buffer{}
+	_, err = buildAndRun("./"+TESTDATA+"/winstackoverflow.go", config, output, nil, nil, time.Minute, func(cmd *exec.Cmd, result builder.BuildResult) error {
+		cmd.Stderr = cmd.Stdout
+		return cmd.Run()
+	})
+	if err == nil || !strings.Contains(output.String(), "goroutine stack overflow") {
+		t.Fatalf("want a goroutine stack overflow, got error %v and output:\n%s", err, output)
+	}
+}
+
 // TestTimerStopResetRace checks that stopping or resetting a timer while its
 // callback is running behaves correctly. It reaches into the runtime timer
 // hooks via //go:linkname and relies on the threads scheduler, which is only
