@@ -519,6 +519,7 @@ func TestBuild(t *testing.T) {
 		"testing.go",
 		"timers.go",
 		"typealias.go",
+		"x86cpu.go",
 		"zeroalloc.go",
 	}
 
@@ -908,6 +909,10 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 	}
 
 	for _, name := range tests {
+		if name == "x86cpu.go" && (options.Target != "" || (options.GOARCH != "amd64" && options.GOARCH != "386")) {
+			// golang.org/x/sys/cpu only has this path on x86 operating systems.
+			continue
+		}
 		if name == "goroutines.go" && (spec.Scheduler == "threads" || spec.Scheduler == "cores") {
 			// This test intentionally checks concurrent scheduling by comparing
 			// output order, so only run it with non-threaded schedulers.

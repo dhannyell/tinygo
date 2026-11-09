@@ -2421,6 +2421,8 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			if b.GOOS == "windows" {
 				return b.createSyscalln(instr)
 			}
+		case (name == "golang.org/x/sys/cpu.cpuid" || name == "golang.org/x/sys/cpu.xgetbv") && fn.Blocks == nil && (b.GOARCH == "386" || b.GOARCH == "amd64"):
+			return b.createX86CPUInfo(name, instr), nil
 		case strings.HasPrefix(name, "syscall.rawSyscallNoError") || strings.HasPrefix(name, "golang.org/x/sys/unix.RawSyscallNoError"):
 			return b.createRawSyscallNoError(instr)
 		case name == "runtime.supportsRecover":

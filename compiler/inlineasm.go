@@ -7,6 +7,7 @@ import (
 	"go/constant"
 	"go/token"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -261,4 +262,26 @@ func (b *builder) createInterruptCheckpoint(ptr ssa.Value) llvm.Value {
 	stackPointer := b.readStackPointer()
 	b.CreateStore(stackPointer, addr)
 	return b.createCheckpoint(addr)
+}
+
+// createX86CPUInfo lowers the Go assembly functions cpuid and xgetbv of
+// golang.org/x/sys/cpu to the instructions of the same name.
+func (b *builder) createX86CPUInfo(name string, instr *ssa.CallCommon) llvm.Value {
+	i32 := b.ctx.Int32Type()
+	var args []llvm.Value
+	for _, arg := range instr.Args {
+		args = append(args, b.getValue(arg, getPos(instr)))
+	}
+	asm, constraints, results := "cpuid", "={eax},={ebx},={ecx},={edx},{eax},{ecx}", 4
+	if name == "golang.org/x/sys/cpu.xgetbv" {
+		asm, constraints, results = "xgetbv", "={eax},={edx},{ecx}", 2
+		args = []llvm.Value{llvm.ConstInt(i32, 0, false)}
+	}
+	var argTypes []llvm.Type
+	for _, arg := range args {
+		argTypes = append(argTypes, arg.Type())
+	}
+	fnType := llvm.FunctionType(b.ctx.StructType(slices.Repeat([]llvm.Type{i32}, results), false), argTypes, false)
+	target := llvm.InlineAsm(fnType, asm, constraints, true, false, 0, false)
+	return b.CreateCall(fnType, target, args, "")
 }
