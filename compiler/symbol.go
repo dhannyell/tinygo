@@ -57,6 +57,9 @@ const (
 	// Don't inline, just like the GCC noinline attribute. Signalled using
 	// //go:noinline.
 	inlineNone
+
+	// Inline at every direct call. Signalled using //go:alwaysinline.
+	inlineAlways
 )
 
 // Values for the allockind attribute. Source:
@@ -80,11 +83,20 @@ func (c *compilerContext) getFunction(fn *ssa.Function) (llvm.Type, llvm.Value) 
 	}
 
 	retType, indirectResult := c.hasIndirectResult(fn.Signature)
+	win64Sret := false
 	if info.exported {
 		indirectResult = false
+		win64Sret = c.win64Sret(fn.Signature)
+		if lowered, coerced := c.win64Aggregate(retType); lowered && !win64Sret {
+			retType = coerced
+		}
 	}
 
 	var paramInfos []paramInfo
+	if win64Sret {
+		paramInfos = append(paramInfos, paramInfo{llvmType: c.dataPtrType, name: "return"})
+		retType = c.ctx.VoidType()
+	}
 	if indirectResult {
 		paramInfos = append(paramInfos, paramInfo{
 			llvmType: c.dataPtrType,
@@ -95,7 +107,9 @@ func (c *compilerContext) getFunction(fn *ssa.Function) (llvm.Type, llvm.Value) 
 	}
 	for _, param := range getParams(fn.Signature) {
 		paramType := c.getLLVMType(param.Type())
-		if info.exported {
+		if t, ok := c.win64ParamType(paramType); ok && info.exported {
+			paramInfos = append(paramInfos, paramInfo{llvmType: t, name: param.Name(), flags: paramIsGoParam})
+		} else if info.exported {
 			paramInfos = append(paramInfos, c.expandDirectFormalParamType(paramType, param.Name(), param.Type())...)
 		} else {
 			paramInfos = append(paramInfos, c.expandFormalParamType(paramType, param.Name(), param.Type())...)
@@ -117,6 +131,9 @@ func (c *compilerContext) getFunction(fn *ssa.Function) (llvm.Type, llvm.Value) 
 
 	fnType := llvm.FunctionType(retType, paramTypes, info.variadic)
 	llvmFn = llvm.AddFunction(c.mod, info.linkName, fnType)
+	if win64Sret {
+		llvmFn.AddAttributeAtIndex(1, c.sretAttribute(c.getLLVMResultType(fn.Signature)))
+	}
 	if hasIndirectABI {
 		// Argument promotion only rewrites functions whose uses are all direct
 		// calls. Keep an address use so LLVM cannot reconstruct the large
@@ -510,6 +527,8 @@ func (c *compilerContext) parsePragmas(info *functionInfo, f *ssa.Function) {
 			info.wasmExportPos = comment.Slash
 		case "//go:inline":
 			info.inline = inlineHint
+		case "//go:alwaysinline":
+			info.inline = inlineAlways
 		case "//go:noinline":
 			info.inline = inlineNone
 		case "//go:linkname", "//go:linknamestd":

@@ -5,6 +5,8 @@ declare void @externalCall(i64)
 
 declare i64 @ptrHash(ptr nocapture)
 
+declare void @externalPtr(ptr)
+
 @foo.knownAtRuntime = global i64 0
 @bar.knownAtRuntime = global i64 0
 @baz.someGlobal = external global [3 x {i64, i32}]
@@ -14,6 +16,9 @@ declare i64 @ptrHash(ptr nocapture)
 @y.ready = global i32 0
 @z.bloom = global i64 0
 @z.arr = global [32 x i8] zeroinitializer
+@r.str = private constant [2 x i8] c"a\00"
+@r.table = private constant [1 x i32] [i32 trunc (i64 sub (i64 ptrtoint (ptr @r.str to i64), i64 ptrtoint (ptr @r.table to i64)) to i32)]
+@r.offset = global i32 0
 
 define void @runtime.initAll() unnamed_addr {
 entry:
@@ -24,6 +29,7 @@ entry:
   call void @x.init(ptr undef)
   call void @y.init(ptr undef)
   call void @z.init(ptr undef)
+  call void @r.init(ptr undef)
   ret void
 }
 
@@ -112,5 +118,15 @@ define internal void @z.set(ptr %ptr, ptr %context) unnamed_addr {
   %old = load i64, ptr %context
   %new = or i64 %old, %bit
   store i64 %new, ptr %context
+  ret void
+}
+
+define internal void @r.init(ptr %context) unnamed_addr {
+  ; The interpreter cannot hold the pointer offsets of a relative lookup
+  ; table, so this load must run at runtime.
+  %offset = load i32, ptr @r.table
+  store i32 %offset, ptr @r.offset
+  ; The external call marks the pointers in the table as external.
+  call void @externalPtr(ptr @r.table)
   ret void
 }

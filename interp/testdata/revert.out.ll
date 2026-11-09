@@ -10,10 +10,15 @@ target triple = "x86_64--linux"
 @y.ready = local_unnamed_addr global i32 0
 @z.bloom = global i64 0
 @z.arr = global [32 x i8] zeroinitializer
+@r.str = private constant [2 x i8] c"a\00"
+@r.table = private constant [1 x i32] [i32 trunc (i64 sub (i64 ptrtoint (ptr @r.str to i64), i64 ptrtoint (ptr @r.table to i64)) to i32)]
+@r.offset = local_unnamed_addr global i32 0
 
 declare void @externalCall(i64) local_unnamed_addr
 
 declare i64 @ptrHash(ptr nocapture) local_unnamed_addr
+
+declare void @externalPtr(ptr) local_unnamed_addr
 
 define void @runtime.initAll() unnamed_addr {
 entry:
@@ -30,6 +35,9 @@ entry:
   call fastcc void @y.init(ptr undef)
   call fastcc void @z.set(ptr @z.bloom, ptr @z.bloom)
   call fastcc void @z.setArr(ptr @z.arr, i64 32, ptr @z.bloom)
+  %offset = load i32, ptr @r.table, align 4
+  store i32 %offset, ptr @r.offset, align 4
+  call void @externalPtr(ptr @r.table)
   ret void
 }
 

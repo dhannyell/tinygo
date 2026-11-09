@@ -60,3 +60,5 @@ type (
 
 const _Cgo_BAR = 3
 const _Cgo_FOO_H = 1
+const _Cgo_CONSTRAINTS_OK = 1
+const _Cgo_SRCDIR_H = 1

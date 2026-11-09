@@ -14,6 +14,7 @@ package cgo
 import (
 	"fmt"
 	"go/ast"
+	"go/build/constraint"
 	"go/parser"
 	"go/scanner"
 	"go/token"
@@ -45,6 +46,7 @@ type cgoPackage struct {
 	ldflags         []string // LDFlags from #cgo lines
 	visitedFiles    map[string][]byte
 	cgoHeaders      []string
+	buildTags       map[string]bool // tags that are true in #cgo line constraints
 }
 
 // cgoFile holds information only for a single Go file (with one or more
@@ -250,8 +252,19 @@ func _Cgo___get_errno() error {
 // functions), the CFLAGS and LDFLAGS found in #cgo lines, and a map of file
 // hashes of the accessed C header files. If there is one or more error, it
 // returns these in the []error slice but still modifies the AST.
-func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cflags []string, goos string) ([]*ast.File, []string, []string, []string, map[string][]byte, []error) {
+// The goos, goarch and buildTags parameters decide the constraints in #cgo
+// lines, the same way as in Go. The exportHeader result is the text of
+// _cgo_export.h, or "" if the package exports no functions.
+func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cflags []string, goos, goarch string, buildTags []string) (generated []*ast.File, headerCode, cgoCFlags, cgoLDFlags []string, accessedFiles map[string][]byte, exportHeader string, errs []error) {
+	tags := map[string]bool{goos: true, goarch: true, "cgo": true}
+	if unixOS[goos] {
+		tags["unix"] = true
+	}
+	for _, tag := range buildTags {
+		tags[tag] = true
+	}
 	p := &cgoPackage{
+		buildTags:       tags,
 		packageName:     files[0].Name.Name,
 		currentDir:      dir,
 		importPath:      importPath,
@@ -271,7 +284,7 @@ func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cfl
 	// Find the absolute path for this package.
 	packagePath, err := filepath.Abs(fset.File(files[0].Pos()).Name())
 	if err != nil {
-		return nil, nil, nil, nil, nil, []error{
+		return nil, nil, nil, nil, nil, "", []error{
 			scanner.Error{
 				Pos: fset.Position(files[0].Pos()),
 				Msg: "cgo: cannot find absolute path: " + err.Error(), // TODO: wrap this error
@@ -364,6 +377,9 @@ func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cfl
 		p.cgoHeaders[i] = cgoHeader.String()
 	}
 
+	// Make the header before the walker replaces the C.X names.
+	exportHeader = p.exportHeader(files)
+
 	// Define CFlags that will be used while parsing the package.
 	// Disable _FORTIFY_SOURCE as it causes problems on macOS.
 	// Note that it is only disabled for memcpy (etc) calls made from Go, which
@@ -394,13 +410,16 @@ func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cfl
 		cf.names["_Bool"] = clangCursor{}
 		// Now read all the names (identifies) that C defines in the header
 		// snippet.
-		cf.readNames(p.cgoHeaders[i], cflagsForCGo, filepath.Base(fset.File(f.Pos()).Name()), func(names map[string]clangCursor) {
+		calls := cgoCallNames(f)
+		fragment := p.cgoHeaders[i] + macroAliasProbes(calls)
+		cf.readNames(fragment, cflagsForCGo, filepath.Base(fset.File(f.Pos()).Name()), func(names map[string]clangCursor) {
 			for _, name := range builtinAliases {
 				// Names such as C.int should not be obtained from C.
 				// This works around an issue in picolibc that has `#define int`
 				// in a header file.
 				delete(names, name)
 			}
+			cf.renameMacroFunctions(f, names, calls)
 			astutil.Apply(f, func(cursor *astutil.Cursor) bool {
 				return cf.walker(cursor, names)
 			}, nil)
@@ -426,7 +445,7 @@ func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cfl
 	// Print the newly generated in-memory AST, for debugging.
 	//ast.Print(fset, p.generated)
 
-	return p.cgoFiles, p.cgoHeaders, p.cflags, p.ldflags, p.visitedFiles, p.errors
+	return p.cgoFiles, p.cgoHeaders, p.cflags, p.ldflags, p.visitedFiles, exportHeader, p.errors
 }
 
 func (p *cgoPackage) newCGoFile(file *ast.File, index int) *cgoFile {
@@ -460,6 +479,96 @@ func (p *cgoPackage) makePathsAbsolute(args []string) {
 				args[i] = arg[:2] + filepath.Join(p.packageDir, path)
 			}
 		}
+	}
+}
+
+// macroAliasPrefix starts the names of the probe functions that
+// macroAliasProbes adds to the C fragment.
+const macroAliasPrefix = "__tinygo_cgo_alias_"
+
+// cgoCallNames returns the sorted names X of all C.X(...) calls in f.
+func cgoCallNames(f *ast.File) []string {
+	seen := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if x, ok := sel.X.(*ast.Ident); ok && x.Name == "C" {
+					seen[sel.Sel.Name] = true
+				}
+			}
+		}
+		return true
+	})
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// macroAliasProbes returns C code with one probe function for each called
+// name that is a macro. Clang expands the macro in the probe, so cgo can find
+// the function that the macro names (see macroFunctionName).
+func macroAliasProbes(calls []string) string {
+	var b strings.Builder
+	for _, name := range calls {
+		fmt.Fprintf(&b, "\n#ifdef %s\n__attribute__((unused)) static void %s%s(void) { (void)(%s); }\n#endif\n", name, macroAliasPrefix, name, name)
+	}
+	return b.String()
+}
+
+// renameMacroFunctions replaces C.X with C.Y in f when the macro X expands to
+// the name of the C function Y.
+func (f *cgoFile) renameMacroFunctions(file *ast.File, names map[string]clangCursor, calls []string) {
+	renames := map[string]string{}
+	for _, name := range calls {
+		if target, ok := f.macroFunctionName(names, name); ok {
+			renames[name] = target
+		}
+	}
+	if len(renames) == 0 {
+		return
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == "C" {
+				if target, ok := renames[sel.Sel.Name]; ok {
+					sel.Sel.Name = target
+				}
+			}
+		}
+		return true
+	})
+}
+
+// unixOS lists the GOOS values that satisfy the "unix" build constraint.
+var unixOS = map[string]bool{
+	"aix": true, "android": true, "darwin": true, "dragonfly": true,
+	"freebsd": true, "hurd": true, "illumos": true, "ios": true,
+	"linux": true, "netbsd": true, "openbsd": true, "solaris": true,
+}
+
+// matchCGoConstraint reports whether one of the fields before the variable
+// name in a #cgo line is satisfied. Each field is a +build style term, so a
+// comma means AND and a ! negates a tag.
+func (p *cgoPackage) matchCGoConstraint(fields []string) (bool, error) {
+	for _, field := range fields {
+		expr, err := constraint.Parse("// +build " + field)
+		if err != nil {
+			return false, err
+		}
+		if expr.Eval(func(tag string) bool { return p.buildTags[tag] }) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// expandSrcDir replaces ${SRCDIR} in flags with the package directory.
+func (p *cgoPackage) expandSrcDir(flags []string) {
+	for i, flag := range flags {
+		flags[i] = strings.ReplaceAll(flag, "${SRCDIR}", p.packageDir)
 	}
 }
 
@@ -531,8 +640,14 @@ func (p *cgoPackage) parseCGoPreprocessorLines(text string, pos token.Pos) strin
 		}
 
 		if len(fields) > 1 {
-			p.addErrorAfter(pos, text[:lineStart+5], "not implemented: build constraints in #cgo line")
-			continue
+			matched, err := p.matchCGoConstraint(fields[:len(fields)-1])
+			if err != nil {
+				p.addErrorAfter(pos, text[:lineStart+5], "invalid build constraint in #cgo line: "+err.Error())
+				continue
+			}
+			if !matched {
+				continue
+			}
 		}
 
 		name := fields[len(fields)-1]
@@ -545,6 +660,7 @@ func (p *cgoPackage) parseCGoPreprocessorLines(text string, pos token.Pos) strin
 				p.addErrorAfter(pos, text[:lineStart+colon+1], "failed to parse flags in #cgo line: "+err.Error())
 				continue
 			}
+			p.expandSrcDir(flags)
 			if err := checkCompilerFlags(name, flags); err != nil {
 				p.addErrorAfter(pos, text[:lineStart+colon+1], err.Error())
 				continue
@@ -558,6 +674,7 @@ func (p *cgoPackage) parseCGoPreprocessorLines(text string, pos token.Pos) strin
 				p.addErrorAfter(pos, text[:lineStart+colon+1], "failed to parse flags in #cgo line: "+err.Error())
 				continue
 			}
+			p.expandSrcDir(flags)
 			if err := checkLinkerFlags(name, flags); err != nil {
 				p.addErrorAfter(pos, text[:lineStart+colon+1], err.Error())
 				continue
@@ -1145,6 +1262,12 @@ func (p *cgoPackage) isEquivalentAST(a, b ast.Node) bool {
 		return p.isEquivalentAST(node.X, b.X)
 	case *ast.StarExpr:
 		b, ok := b.(*ast.StarExpr)
+		if !ok {
+			return false
+		}
+		return p.isEquivalentAST(node.X, b.X)
+	case *ast.ParenExpr:
+		b, ok := b.(*ast.ParenExpr)
 		if !ok {
 			return false
 		}

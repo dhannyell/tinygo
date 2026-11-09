@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/token"
 	"os"
+	"strings"
 
 	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler/ircheck"
@@ -126,6 +127,9 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		}
 	}
 
+	// Run after globaldce, so the table refers only to live globals.
+	PreciseGlobals(mod)
+
 	if config.Scheduler() == "none" {
 		// Check for any goroutine starts.
 		if start := mod.NamedFunction("internal/task.start"); !start.IsNil() && len(getUses(start)) > 0 {
@@ -168,6 +172,10 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 	}
 
 	hasGCPass := MakeGCStackSlots(mod)
+	if hasGCPass && strings.Contains(config.Features(), "+atomics") {
+		// Threads push GC frames concurrently, so each thread keeps its own chain head.
+		mod.NamedGlobal("runtime.stackChainStart").SetThreadLocal(true)
+	}
 	if hasGCPass {
 		if err := llvm.VerifyModule(mod, llvm.PrintMessageAction); err != nil {
 			return []error{errors.New("GC pass caused a verification failure")}

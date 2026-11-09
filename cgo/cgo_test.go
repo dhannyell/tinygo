@@ -55,7 +55,7 @@ func TestCGo(t *testing.T) {
 			}
 
 			// Process the AST with CGo.
-			cgoFiles, _, _, _, _, cgoErrors := Process([]*ast.File{f}, "testdata", "main", fset, cflags, "linux")
+			cgoFiles, _, _, _, _, exportHeader, cgoErrors := Process([]*ast.File{f}, "testdata", "main", fset, cflags, "linux", "arm", nil)
 
 			// Check the AST for type errors.
 			var typecheckErrors []error
@@ -88,6 +88,13 @@ func TestCGo(t *testing.T) {
 				buf.WriteString("// Type checking errors after CGo processing:\n")
 				for _, err := range typecheckErrors {
 					buf.WriteString(formatDiagnostic(err))
+				}
+				buf.WriteString("\n")
+			}
+			if exportHeader != "" {
+				buf.WriteString("// _cgo_export.h:\n")
+				for _, line := range strings.Split(strings.TrimRight(exportHeader, "\n"), "\n") {
+					buf.WriteString(strings.TrimRight("//\t"+line, " \t") + "\n")
 				}
 				buf.WriteString("\n")
 			}
@@ -186,6 +193,18 @@ func Test_cgoPackage_isEquivalentAST(t *testing.T) {
 			name:     "FuncDecl Type Results b nil",
 			a:        funcDeclA,
 			b:        funcDeclNoResults,
+			expected: false,
+		},
+		{
+			name:     "ParenExpr same",
+			a:        &ast.ParenExpr{X: fieldA.Type},
+			b:        &ast.ParenExpr{X: fieldA.Type},
+			expected: true,
+		},
+		{
+			name:     "ParenExpr different",
+			a:        &ast.ParenExpr{X: fieldA.Type},
+			b:        &ast.ParenExpr{X: fieldB.Type},
 			expected: false,
 		},
 	}

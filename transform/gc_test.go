@@ -13,3 +13,10 @@ func TestMakeGCStackSlots(t *testing.T) {
 		transform.MakeGCStackSlots(mod)
 	})
 }
+
+func TestPreciseGlobals(t *testing.T) {
+	t.Parallel()
+	testTransform(t, "testdata/gc-globals", func(mod llvm.Module) {
+		transform.PreciseGlobals(mod)
+	})
+}

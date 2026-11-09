@@ -88,3 +88,19 @@ unsigned tinygo_clang_Cursor_isBitField(CXCursor c) {
 unsigned tinygo_clang_Cursor_isMacroFunctionLike(CXCursor c) {
 	return clang_Cursor_isMacroFunctionLike(c);
 }
+
+static enum CXChildVisitResult tinygo_clang_findDeclRef_visitor(CXCursor c, CXCursor parent, CXClientData client_data) {
+	if (clang_getCursorKind(c) == CXCursor_DeclRefExpr) {
+		*(CXCursor *)client_data = clang_getCursorReferenced(c);
+		return CXChildVisit_Break;
+	}
+	return CXChildVisit_Recurse;
+}
+
+// Return the declaration that the first DeclRefExpr below c refers to, or a
+// null cursor.
+CXCursor tinygo_clang_findReferencedDecl(CXCursor c) {
+	CXCursor result = clang_getNullCursor();
+	clang_visitChildren(c, tinygo_clang_findDeclRef_visitor, &result);
+	return result;
+}

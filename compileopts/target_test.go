@@ -6,8 +6,33 @@ import (
 	"io/fs"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 )
+
+func TestLoadTargetGOAMD64(t *testing.T) {
+	for _, test := range []struct{ level, cpu, tag string }{
+		{"", "x86-64", "amd64.v1"},
+		{"v1", "x86-64", "amd64.v1"},
+		{"v2", "x86-64-v2", "amd64.v2"},
+		{"v3", "x86-64-v3", "amd64.v3"},
+	} {
+		spec, err := LoadTarget(&Options{GOOS: "linux", GOARCH: "amd64", GOAMD64: test.level})
+		if err != nil {
+			t.Fatalf("GOAMD64=%q: %v", test.level, err)
+		}
+		if spec.CPU != test.cpu {
+			t.Errorf("GOAMD64=%q: CPU is %q, want %q", test.level, spec.CPU, test.cpu)
+		}
+		if !slices.Contains(spec.BuildTags, test.tag) {
+			t.Errorf("GOAMD64=%q: build tags %v do not have %q", test.level, spec.BuildTags, test.tag)
+		}
+	}
+
+	if _, err := LoadTarget(&Options{GOOS: "linux", GOARCH: "amd64", GOAMD64: "v4"}); err == nil {
+		t.Error("GOAMD64=v4 must be rejected")
+	}
+}
 
 func TestLoadTarget(t *testing.T) {
 	_, err := LoadTarget(&Options{Target: "arduino"})
@@ -191,6 +216,31 @@ func TestConfigLinkerFlavor(t *testing.T) {
 			}
 			if got := config.LinkerFlavor(); got != tc.want {
 				t.Fatalf("LinkerFlavor() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfigMaxStackAlloc(t *testing.T) {
+	tests := []struct {
+		name      string
+		target    *TargetSpec
+		stackSize uint64
+		want      uint64
+	}{
+		{"threads default stack", &TargetSpec{GOARCH: "amd64", Scheduler: "threads", DefaultStackSize: 64 * 1024}, 0, 8192},
+		{"threads large stack", &TargetSpec{GOARCH: "amd64", Scheduler: "threads", DefaultStackSize: 64 * 1024}, 1024 * 1024, 128 * 1024},
+		{"tasks has no guard page", &TargetSpec{GOOS: "linux", GOARCH: "amd64", Scheduler: "tasks", DefaultStackSize: 64 * 1024}, 0, 1024},
+		{"windows tasks checks large frames", &TargetSpec{GOOS: "windows", GOARCH: "amd64", Scheduler: "tasks", DefaultStackSize: 64 * 1024}, 0, 8192},
+		{"windows arm64 tasks has no check", &TargetSpec{GOOS: "windows", GOARCH: "arm64", Scheduler: "tasks", DefaultStackSize: 64 * 1024}, 0, 1024},
+		{"wasm has no guard page", &TargetSpec{GOARCH: "wasm", Scheduler: "threads", DefaultStackSize: 64 * 1024}, 0, 1024},
+		{"target override", &TargetSpec{GOARCH: "amd64", Scheduler: "threads", DefaultStackSize: 64 * 1024, MaxStackAlloc: 512}, 0, 512},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &Config{Options: &Options{StackSize: tc.stackSize}, Target: tc.target}
+			if got := config.MaxStackAlloc(); got != tc.want {
+				t.Fatalf("MaxStackAlloc() = %d, want %d", got, tc.want)
 			}
 		})
 	}

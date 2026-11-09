@@ -1,6 +1,9 @@
 package main
 
-import "runtime"
+import (
+	"runtime"
+	"unsafe"
+)
 
 var xorshift32State uint32 = 1
 
@@ -18,8 +21,38 @@ func randuint32() uint32 {
 }
 
 func main() {
+	// These run first, so the freed objects are the ones reused.
+	testPreciseGlobal()
+	testPointerArray()
+	testPinner()
 	testNonPointerHeap()
 	testKeepAlive()
+}
+
+// A Pinner holds the only references to small objects, like C code that keeps
+// Go pointers. The XOR hides the addresses from a conservative scan.
+func testPinner() {
+	const hide = ^uintptr(0)
+	n := 2001 // boehm reuses freed memory only at this size
+	if ^uintptr(0) <= 0xffff {
+		n = 21
+	}
+	var pinner runtime.Pinner
+	addrs := make([]uintptr, n)
+	for i := range addrs {
+		v := uint32(i) * 2654435761
+		pinner.Pin(&v)
+		addrs[i] = uintptr(unsafe.Pointer(&v)) ^ hide
+	}
+	runtime.GC()
+	reuseFreed(len(addrs))
+	for i, addr := range addrs {
+		if *(*uint32)(unsafe.Pointer(addr ^ hide)) != uint32(i)*2654435761 {
+			panic("a pinned object was freed")
+		}
+	}
+	pinner.Unpin()
+	println("ok")
 }
 
 var scalarSlices [4][]byte
@@ -73,4 +106,65 @@ func testKeepAlive() {
 	// runtime.KeepAlive compiles correctly.
 	var x int
 	runtime.KeepAlive(&x)
+}
+
+type pointerElem struct {
+	a, b, c uint64
+	p       *uint32
+	d       uint64
+}
+
+var reused []*uint32
+
+// A large array holds the only references to small objects. The GC must find
+// them through the pointer words of the element layout.
+func testPointerArray() {
+	n := 2001 // odd and above 50 elements, like most real arrays
+	if ^uintptr(0) <= 0xffff {
+		n = 21
+	}
+	elems := make([]pointerElem, n)
+	for i := range elems {
+		v := uint32(i) * 2654435761
+		elems[i].p = &v
+	}
+	runtime.GC()
+	reuseFreed(n)
+	for i := range elems {
+		if *elems[i].p != uint32(i)*2654435761 {
+			panic("a pointer in an array element was not marked")
+		}
+	}
+	println("ok")
+}
+
+// Reuse the memory of any object the GC freed by mistake. A global holds each
+// new object, so the compiler cannot remove the allocations.
+func reuseFreed(n int) {
+	reused = make([]*uint32, 16*n)
+	for i := range reused {
+		reused[i] = new(uint32)
+		*reused[i] = 0xdeadbeef
+	}
+	runtime.GC()
+}
+
+// A large global holds the only references to small objects. The GC must find
+// them through the pointer words of the global layout. 16-bit targets have no
+// room for it.
+var preciseGlobal [128 * (unsafe.Sizeof(uintptr(0)) / 4)]pointerElem
+
+func testPreciseGlobal() {
+	for i := range preciseGlobal {
+		v := uint32(i) * 2654435761
+		preciseGlobal[i].p = &v
+	}
+	runtime.GC()
+	reuseFreed(len(preciseGlobal))
+	for i := range preciseGlobal {
+		if *preciseGlobal[i].p != uint32(i)*2654435761 {
+			panic("a pointer in a large global was not marked")
+		}
+	}
+	println("ok")
 }

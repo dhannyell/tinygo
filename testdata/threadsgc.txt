@@ -1,0 +1,2 @@
+threads gc: bad walks: 0
+gomaxprocs is numcpu: true

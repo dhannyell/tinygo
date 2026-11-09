@@ -1,5 +1,135 @@
 //go:build none
 
+#ifdef _WIN32
+
+#include <windows.h>
+#include <stdint.h>
+
+#define MIN_THREAD_STACK (1024 * 1024)
+
+// TLS slots for the current task.Task and for the handle of the thread.
+static DWORD current_task_slot;
+static DWORD thread_handle_slot;
+
+struct state_pass {
+    void      *(*start)(void*);
+    void      *args;
+    void      *task;
+    uintptr_t *stackTop;
+    HANDLE    thread;
+    HANDLE    startlock;
+};
+
+void tinygo_task_init(void *mainTask, HANDLE *thread, int *numCPU, void *context) {
+    current_task_slot = TlsAlloc();
+    thread_handle_slot = TlsAlloc();
+    TlsSetValue(current_task_slot, mainTask);
+
+    // GetCurrentThread returns a pseudo handle, which other threads cannot use.
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                    thread, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    TlsSetValue(thread_handle_slot, *thread);
+
+    int num = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    if (num <= 0) {
+        num = 1;
+    }
+    *numCPU = num;
+}
+
+void tinygo_task_exited(void*);
+void tinygo_task_exit(void);
+
+static DWORD WINAPI start_wrapper(LPVOID arg) {
+    struct state_pass *state = arg;
+    void *(*start)(void*) = state->start;
+    void *args = state->args;
+    TlsSetValue(current_task_slot, state->task);
+    TlsSetValue(thread_handle_slot, state->thread);
+
+    // Save the current stack pointer in the goroutine state, for the GC.
+    int stackAddr;
+    *(state->stackTop) = (uintptr_t)(&stackAddr);
+
+    // The caller may free state after this.
+    SetEvent(state->startlock);
+
+    start(args);
+    tinygo_task_exited(TlsGetValue(current_task_slot));
+    tinygo_task_exit();
+    return 0;
+}
+
+int tinygo_task_start(uintptr_t fn, void *args, void *task, HANDLE *thread, uintptr_t *stackTop, uintptr_t stackSize, void *context) {
+    struct state_pass state = {
+        .start     = (void*)fn,
+        .args      = args,
+        .task      = task,
+        .stackTop  = stackTop,
+    };
+    state.startlock = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (state.startlock == NULL) {
+        return 1;
+    }
+
+    // C code such as a GPU driver also runs on this stack. The size is only a
+    // reservation: pages are committed when the thread uses them.
+    if (stackSize < MIN_THREAD_STACK) {
+        stackSize = MIN_THREAD_STACK;
+    }
+    HANDLE h = CreateThread(NULL, stackSize, start_wrapper, &state,
+                            CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (h == NULL) {
+        CloseHandle(state.startlock);
+        return 1;
+    }
+    state.thread = h;
+    *thread = h;
+    ResumeThread(h);
+
+    WaitForSingleObject(state.startlock, INFINITE);
+    CloseHandle(state.startlock);
+    return 0;
+}
+
+void* tinygo_task_current(void) {
+    return TlsGetValue(current_task_slot);
+}
+
+// Exit the current thread. The task is no longer in the task list, so the GC
+// does not use the handle after this.
+void tinygo_task_exit(void) {
+    CloseHandle(TlsGetValue(thread_handle_slot));
+    ExitThread(0);
+}
+
+// Stop a thread for the GC mark phase. It may run on for a short time.
+void tinygo_task_suspend(HANDLE thread) {
+    SuspendThread(thread);
+}
+
+// Wait until a suspended thread is stopped, and store its registers in buf.
+// buf must hold a CONTEXT plus 15 bytes for the alignment. Return the stack
+// pointer of the thread.
+uintptr_t tinygo_task_get_context(HANDLE thread, void *buf) {
+    CONTEXT *ctx = (CONTEXT*)(((uintptr_t)buf + 15) & ~(uintptr_t)15);
+    ctx->ContextFlags = CONTEXT_FULL;
+    if (!GetThreadContext(thread, ctx)) {
+        return 0;
+    }
+    #if defined(_M_X64) || defined(__x86_64__)
+    return ctx->Rsp;
+    #else
+    #error "unsupported architecture"
+    #endif
+}
+
+void tinygo_task_resume(HANDLE thread) {
+    ResumeThread(thread);
+}
+
+#else // _WIN32
+
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <signal.h>
@@ -154,3 +284,5 @@ void tinygo_task_exit(void) {
 void tinygo_task_send_gc_signal(pthread_t thread) {
     pthread_kill(thread, taskPauseSignal);
 }
+
+#endif // _WIN32

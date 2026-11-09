@@ -35,3 +35,38 @@ void tinygo_runtime_bdwgc_init(void) {
     GC_set_warn_proc(warn_proc);
 #endif
 }
+
+// Finalizers run on demand: the Go side drains them with no GC lock held.
+typedef void (*GC_finalization_proc)(void *obj, void *client_data);
+void GC_register_finalizer(void *obj, GC_finalization_proc fn, void *cd, GC_finalization_proc *ofn, void **ocd);
+void GC_set_finalize_on_demand(int);
+
+void tinygo_runtime_bdwgc_finalizer(void *obj, void *cd);
+
+static void finalizer_proc(void *obj, void *cd) {
+    tinygo_runtime_bdwgc_finalizer(obj, cd);
+}
+
+void tinygo_runtime_bdwgc_set_finalizer(void *obj, void *cd) {
+    GC_register_finalizer(obj, cd ? finalizer_proc : 0, cd, 0, 0);
+}
+
+void tinygo_runtime_bdwgc_init_finalizers(void) {
+    GC_set_finalize_on_demand(1);
+}
+
+static volatile int tinygo_alloc_lock_word;
+static unsigned long long tinygo_alloc_lock_takes, tinygo_alloc_lock_spins;
+void tinygo_runtime_alloc_lock(void) {
+    unsigned long long spins = 0;
+    while (__atomic_exchange_n(&tinygo_alloc_lock_word, 1, __ATOMIC_ACQUIRE)) {
+        spins++;
+    }
+    tinygo_alloc_lock_takes++;
+    tinygo_alloc_lock_spins += spins;
+}
+unsigned long long tinygo_runtime_alloc_lock_takes(void) { return tinygo_alloc_lock_takes; }
+unsigned long long tinygo_runtime_alloc_lock_spins(void) { return tinygo_alloc_lock_spins; }
+void tinygo_runtime_alloc_unlock(void) {
+    __atomic_store_n(&tinygo_alloc_lock_word, 0, __ATOMIC_RELEASE);
+}

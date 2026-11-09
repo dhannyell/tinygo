@@ -1,0 +1,2 @@
+sse2: true
+same as /proc/cpuinfo: true

@@ -67,6 +67,7 @@ type Config struct {
 // must not contain function-dependent data such as an IR builder.
 type compilerContext struct {
 	*Config
+	usesSimdVectors  bool
 	DumpSSA          bool
 	mod              llvm.Module
 	ctx              llvm.Context
@@ -93,7 +94,8 @@ type compilerContext struct {
 	loaderPkg        *loader.Package // current package being compiled (for AST access)
 	packageDir       string          // directory for this package
 	runtimePkg       *types.Package
-	localTypeNames   typeutil.Map // *types.Named (synthetic local from generic instantiation) -> string
+	localTypeNames   typeutil.Map                 // *types.Named (synthetic local from generic instantiation) -> string
+	stackThunks      map[stackThunkKey]llvm.Value // see stackSwitchThunk
 }
 
 // newCompilerContext returns a new compiler context ready for use, most
@@ -107,6 +109,7 @@ func newCompilerContext(moduleName string, machine llvm.TargetMachine, config *C
 		machine:       machine,
 		targetData:    machine.CreateTargetData(),
 		functionInfos: map[*ssa.Function]functionInfo{},
+		stackThunks:   map[stackThunkKey]llvm.Value{},
 		astComments:   map[string]*ast.CommentGroup{},
 	}
 
@@ -378,6 +381,8 @@ func CompilePackage(moduleName string, pkg *loader.Package, ssaPkg *ssa.Package,
 		)
 	}
 
+	c.relaxSimdAlignment()
+
 	return c.mod, c.diagnostics
 }
 
@@ -453,6 +458,9 @@ func (c *compilerContext) makeLLVMType(goType types.Type) llvm.Type {
 	case *types.Interface:
 		return c.getLLVMRuntimeType("_interface")
 	case *types.Named:
+		if vector, ok := c.simdVectorType(typ); ok {
+			return vector
+		}
 		if st, ok := typ.Underlying().(*types.Struct); ok {
 			// Structs are a special case. While other named types are ignored
 			// in LLVM IR, named structs are implemented as named structs in
@@ -924,6 +932,9 @@ func (c *compilerContext) createPackage(irbuilder llvm.Builder, pkg *ssa.Package
 					continue
 				}
 				if fn.Blocks == nil {
+					if isSimdFunction(fn) {
+						newBuilder(c, irbuilder, fn).defineSimdIntrinsic()
+					}
 					continue // external function
 				}
 				if fn.Synthetic != "" && fn.Synthetic != "package initializer" {
@@ -949,6 +960,8 @@ func (c *compilerContext) createPackage(irbuilder llvm.Builder, pkg *ssa.Package
 				global.SetVisibility(llvm.HiddenVisibility)
 				if info.section != "" {
 					global.SetSection(info.section)
+				} else {
+					c.addGlobalLayout(member, global)
 				}
 			}
 		}
@@ -1204,12 +1217,21 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		llvmutil.AppendToGlobal(b.mod, "llvm.used", b.llvmFn)
 	}
 
+	if isSimdFunction(b.fn) {
+		// A call around one vector instruction costs more than the instruction.
+		always := b.ctx.CreateEnumAttribute(llvm.AttributeKindID("alwaysinline"), 0)
+		b.llvmFn.AddFunctionAttr(always)
+	}
+
 	// Some functions have a pragma controlling the inlining level.
 	switch b.info.inline {
 	case inlineHint:
 		// Add LLVM inline hint to functions with //go:inline pragma.
 		inline := b.ctx.CreateEnumAttribute(llvm.AttributeKindID("inlinehint"), 0)
 		b.llvmFn.AddFunctionAttr(inline)
+	case inlineAlways:
+		always := b.ctx.CreateEnumAttribute(llvm.AttributeKindID("alwaysinline"), 0)
+		b.llvmFn.AddFunctionAttr(always)
 	case inlineNone:
 		// Add LLVM attribute to always avoid inlining this function.
 		noinline := b.ctx.CreateEnumAttribute(llvm.AttributeKindID("noinline"), 0)
@@ -1270,6 +1292,9 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		b.blockInfo = blockInfo
 		// Normal functions have an entry block.
 		entryBlock = blockInfo[0].entry
+		if b.isCgoCallback() {
+			b.createCgoCallbackSwitch(entryBlock)
+		}
 	}
 	b.SetInsertPointAtEnd(entryBlock)
 
@@ -1285,13 +1310,25 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 
 	// Load function parameters
 	llvmParamIndex := 0
-	if _, indirectResult := b.hasIndirectResult(b.fn.Signature); indirectResult && !b.info.exported {
+	_, indirectResult := b.hasIndirectResult(b.fn.Signature)
+	if (indirectResult && !b.info.exported) || (b.info.exported && b.win64Sret(b.fn.Signature)) {
 		b.indirectReturn = b.llvmFn.Param(llvmParamIndex)
 		b.indirectReturn.SetName("return")
 		llvmParamIndex++
 	}
 	for _, param := range b.fn.Params {
 		llvmType := b.getLLVMType(param.Type())
+		if lowered, coerced := b.win64Aggregate(llvmType); lowered && b.info.exported {
+			llvmParam := b.llvmFn.Param(llvmParamIndex)
+			llvmParam.SetName(param.Name())
+			if coerced.IsNil() {
+				b.locals[param] = b.CreateLoad(llvmType, llvmParam, "")
+			} else {
+				b.locals[param] = b.win64Coerce(llvmParam, llvmType)
+			}
+			llvmParamIndex++
+			continue
+		}
 		if b.isIndirectParam(llvmType, b.info.exported) {
 			llvmParam := b.llvmFn.Param(llvmParamIndex)
 			llvmParam.SetName(param.Name())
@@ -1628,12 +1665,18 @@ func (b *builder) createReturn(results []ssa.Value, pos token.Pos) {
 			}
 		}
 		b.CreateRetVoid()
-	} else if len(results) == 1 {
-		b.CreateRet(b.getValue(results[0], pos))
 	} else {
-		result := llvm.ConstNull(b.llvmFn.GlobalValueType().ReturnType())
-		for i, value := range results {
-			result = b.CreateInsertValue(result, b.getValue(value, pos), i, "")
+		var result llvm.Value
+		if len(results) == 1 {
+			result = b.getValue(results[0], pos)
+		} else {
+			result = llvm.ConstNull(b.getLLVMResultType(b.fn.Signature))
+			for i, value := range results {
+				result = b.CreateInsertValue(result, b.getValue(value, pos), i, "")
+			}
+		}
+		if lowered, coerced := b.win64Aggregate(result.Type()); lowered && b.info.exported {
+			result = b.win64Coerce(result, coerced)
 		}
 		b.CreateRet(result)
 	}
@@ -2232,10 +2275,14 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			if b.GOOS != "darwin" {
 				return b.createSyscall(instr)
 			}
+		case strings.HasPrefix(name, "(simd/archsimd.X86Features).") && isSimdFeature(fn.Name()):
+			return b.simdFeature(fn.Name()), nil
 		case name == "syscall.syscalln":
 			if b.GOOS == "windows" {
 				return b.createSyscalln(instr)
 			}
+		case (name == "golang.org/x/sys/cpu.cpuid" || name == "golang.org/x/sys/cpu.xgetbv") && fn.Blocks == nil && (b.GOARCH == "386" || b.GOARCH == "amd64"):
+			return b.createX86CPUInfo(name, instr), nil
 		case strings.HasPrefix(name, "syscall.rawSyscallNoError") || strings.HasPrefix(name, "golang.org/x/sys/unix.RawSyscallNoError"):
 			return b.createRawSyscallNoError(instr)
 		case name == "runtime.supportsRecover":
@@ -2252,6 +2299,11 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			return llvm.ConstInt(b.ctx.Int8Type(), panicStrategy, false), nil
 		case name == "runtime/interrupt.New":
 			return b.createInterruptGlobal(instr)
+		case name == "runtime.SetFinalizer" && finalizerTakesInterface(instr.Args[1]):
+			// The runtime cannot read the parameter types of a func.
+			obj := b.getValue(instr.Args[0], getPos(instr))
+			finalizer := b.getValue(instr.Args[1], getPos(instr))
+			return b.createRuntimeInvoke("setFinalizerInterface", []llvm.Value{obj, finalizer}, ""), nil
 		case name == "runtime.exportedFuncPtr":
 			_, ptr := b.getFunction(instr.Args[0].(*ssa.Function))
 			return b.CreatePtrToInt(ptr, b.uintptrType, ""), nil
@@ -2270,6 +2322,7 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 	var calleeType llvm.Type
 	var invokeTypecode, invokeReceiver llvm.Value
 	exported := false
+	cgoCall := false
 	if fn := instr.StaticCallee(); fn != nil {
 		calleeType, callee = b.getFunction(fn)
 		info := b.getFunctionInfo(fn)
@@ -2296,6 +2349,7 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			panic("StaticCallee returned an unexpected value")
 		}
 		exported = info.exported
+		cgoCall = isCgoFunction(fn, info)
 	} else if call, ok := instr.Value.(*ssa.Builtin); ok {
 		// Builtin function (append, close, delete, etc.).)
 		var params []llvm.Value
@@ -2343,6 +2397,8 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 		// This function takes a context parameter.
 		// Add it to the end of the parameter list.
 		params = append(params, context)
+	} else if b.GOOS == "windows" && b.GOARCH == "amd64" {
+		return b.createWin64Call(calleeType, callee, params, b.getLLVMResultType(instr.Signature()), cgoCall), nil
 	}
 
 	return b.createInvoke(calleeType, callee, params, ""), nil

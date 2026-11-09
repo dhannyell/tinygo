@@ -48,6 +48,22 @@ var supportedLinuxArches = map[string]string{
 
 var sema = make(chan struct{}, runtime.NumCPU())
 
+// TestArchsimd checks the archsimd operations against the output of gc.
+func TestArchsimd(t *testing.T) {
+	_, minor, err := goenv.GetGorootVersion()
+	if err != nil {
+		t.Fatal("could not get version:", err)
+	}
+	if runtime.GOARCH != "amd64" || minor < 27 {
+		t.Skip("archsimd needs amd64 and Go 1.27")
+	}
+	// go list reads the experiment from the environment.
+	t.Setenv("GOEXPERIMENT", "simd")
+	options := optionsFromTarget("", sema)
+	options.GOAMD64 = "v3"
+	runTestWithConfig("archsimd.go", t, options, nil, nil)
+}
+
 func TestBuild(t *testing.T) {
 	t.Parallel()
 
@@ -88,6 +104,7 @@ func TestBuild(t *testing.T) {
 		"structs.go",
 		"testing.go",
 		"timers.go",
+		"x86cpu.go",
 		"zeroalloc.go",
 	}
 
@@ -123,7 +140,7 @@ func TestBuild(t *testing.T) {
 		hostOptions := optionsFromTarget("", sema)
 		runPlatTests(hostOptions, tests, t)
 
-		// scheduler.threads needs threadID, which exists only on Linux and Darwin.
+		// TestWindowsThreads covers scheduler.threads on Windows.
 		// scheduler.none does not link on Windows.
 		switch runtime.GOOS {
 		case "darwin", "linux":
@@ -268,6 +285,56 @@ func TestBuild(t *testing.T) {
 	}
 }
 
+// TestWindowsCABI checks structs by value at the C boundary on windows/amd64,
+// that C code runs on the system stack, and that runtime.Callers walks
+// through C frames.
+func TestWindowsCABI(t *testing.T) {
+	t.Parallel()
+	options := optionsFromOSARCH("windows/amd64", sema)
+	emuCheck(t, options)
+	runTest("win64abi/", options, t, nil, nil)
+}
+
+// TestWindowsMath runs math.go on windows/amd64. LLVM joins sin and cos into
+// a sincos call, which the ucrt does not have.
+func TestWindowsMath(t *testing.T) {
+	t.Parallel()
+	options := optionsFromOSARCH("windows/amd64", sema)
+	emuCheck(t, options)
+	runTest("math.go", options, t, nil, nil)
+}
+
+// TestWindowsThreads runs concurrency tests with the threads scheduler on
+// windows/amd64. threadsgc.go needs the GC to scan the stacks and the
+// registers of the threads that it stops.
+func TestWindowsThreads(t *testing.T) {
+	t.Parallel()
+	options := optionsFromOSARCH("windows/amd64", sema)
+	options.Scheduler = "threads"
+	emuCheck(t, options)
+	runPlatTests(options, []string{"atomic.go", "channel.go", "gc.go", "threadsgc.go", "timers.go"}, t)
+}
+
+// TestWindowsStackOverflow checks that a large frame past the end of a
+// goroutine stack stops the program on windows/amd64.
+func TestWindowsStackOverflow(t *testing.T) {
+	t.Parallel()
+	options := optionsFromOSARCH("windows/amd64", sema)
+	emuCheck(t, options)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := &bytes.Buffer{}
+	_, err = buildAndRun("./"+TESTDATA+"/winstackoverflow.go", config, output, nil, nil, time.Minute, func(cmd *exec.Cmd, result builder.BuildResult) error {
+		cmd.Stderr = cmd.Stdout
+		return cmd.Run()
+	})
+	if err == nil || !strings.Contains(output.String(), "goroutine stack overflow") {
+		t.Fatalf("want a goroutine stack overflow, got error %v and output:\n%s", err, output)
+	}
+}
+
 // TestTimerStopResetRace checks that stopping or resetting a timer while its
 // callback is running behaves correctly. It reaches into the runtime timer
 // hooks via //go:linkname and relies on the threads scheduler, which is only
@@ -317,6 +384,10 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 	}
 
 	for _, name := range tests {
+		if name == "x86cpu.go" && (options.Target != "" || (options.GOARCH != "amd64" && options.GOARCH != "386")) {
+			// golang.org/x/sys/cpu only has this path on x86 operating systems.
+			continue
+		}
 		if name == "goroutines.go" && (spec.Scheduler == "threads" || spec.Scheduler == "cores") {
 			// This test intentionally checks concurrent scheduling by comparing
 			// output order, so only run it with non-threaded schedulers.

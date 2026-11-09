@@ -85,8 +85,36 @@ define void @testZeroSizedAlloc() {
   ret void
 }
 
+; Store a pointer into a local container that the GC tracks. The tracking call
+; does not copy the pointer out, so both objects go on the stack.
+define i32 @testTrackedContainer() {
+  %obj = call align 4 ptr @runtime.alloc(i32 4, ptr null)
+  store i32 5, ptr %obj
+  %container = call align 4 ptr @runtime.alloc(i32 4, ptr null)
+  call void @runtime.trackPointer(ptr %container, ptr undef)
+  store ptr %obj, ptr %container
+  %ptr = load ptr, ptr %container
+  %val = load i32, ptr %ptr
+  ret i32 %val
+}
+
+; A struct loaded from the container carries the pointer. Reading through the
+; extracted pointer does not let it escape, so both objects go on the stack.
+define i32 @testAggregateLoadContainer() {
+  %obj = call align 4 ptr @runtime.alloc(i32 4, ptr null)
+  store i32 5, ptr %obj
+  %container = call align 4 ptr @runtime.alloc(i32 8, ptr null)
+  store ptr %obj, ptr %container
+  %agg = load { ptr, i32 }, ptr %container
+  %ptr = extractvalue { ptr, i32 } %agg, 0
+  %val = load i32, ptr %ptr
+  ret i32 %val
+}
+
 declare ptr @escapeIntPtr(ptr)
 
 declare ptr @noescapeIntPtr(ptr nocapture)
 
 declare ptr @escapeIntPtrSometimes(ptr nocapture, ptr)
+
+declare void @runtime.trackPointer(ptr nocapture, ptr nocapture)

@@ -77,6 +77,7 @@ var BoehmGC = Library{
 			"new_hblk.c",
 			"os_dep.c",
 			"reclaim.c",
+			"typd_mlc.c", // typed allocation of large objects
 		}
 		if strings.Split(target, "-")[2] == "windows" {
 			// Due to how the linker on Windows works (that doesn't allow

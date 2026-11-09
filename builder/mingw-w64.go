@@ -45,6 +45,9 @@ var libMinGW = Library{
 				"-D_CRTBLD",
 				"-Wno-pragma-pack",
 			)
+		} else {
+			// Same as LibcCFlags, for sources that include windows.h.
+			flags = append(flags, "-D_UCRT", "-D_WIN32_WINNT=0x0a00")
 		}
 		return flags
 	},
@@ -85,8 +88,41 @@ var libMinGW = Library{
 				"mingw-w64-crt/stdio/ucrt_vprintf.c",
 				"mingw-w64-crt/stdio/ucrt_vsnprintf.c",
 				"mingw-w64-crt/stdio/ucrt_vsprintf.c",
+				// The __mingw_* stdio that C code with
+				// __USE_MINGW_ANSI_STDIO calls.
+				"mingw-w64-crt/gdtoa/dmisc.c",
+				"mingw-w64-crt/gdtoa/gdtoa.c",
+				"mingw-w64-crt/gdtoa/gmisc.c",
+				"mingw-w64-crt/gdtoa/misc.c",
+				"mingw-w64-crt/gdtoa/gethex.c",
+				"mingw-w64-crt/gdtoa/hd_init.c",
+				"mingw-w64-crt/gdtoa/hexnan.c",
+				"mingw-w64-crt/gdtoa/smisc.c",
+				"mingw-w64-crt/gdtoa/strtodg.c",
+				"mingw-w64-crt/gdtoa/strtof.c",
+				"mingw-w64-crt/gdtoa/strtopx.c",
+				"mingw-w64-crt/gdtoa/sum.c",
+				"mingw-w64-crt/gdtoa/ulp.c",
+				"mingw-w64-crt/misc/strnlen.c",
+				"mingw-w64-crt/misc/wcsnlen.c",
+				"mingw-w64-crt/stdio/mingw_pformat.c",
+				"mingw-w64-crt/stdio/mingw_vfscanf.c",
+				"mingw-w64-crt/stdio/mingw_vsnprintf.c",
+				"mingw-w64-crt/stdio/mingw_vsprintf.c",
+				"mingw-w64-crt/math/fpclassify.c",
+				"mingw-w64-crt/math/fpclassifyl.c",
+				"mingw-w64-crt/math/isnan.c",
+				"mingw-w64-crt/math/isnanl.c",
+				"../mingw-w64-atexit.c",
 			}
 		}
+		// The TLS directory and callbacks, for objects with thread-local variables.
+		sources = append(sources,
+			"mingw-w64-crt/crt/CRT_fp10.c",
+			"mingw-w64-crt/crt/tlsmcrt.c",
+			"mingw-w64-crt/crt/tlssup.c",
+			"mingw-w64-crt/crt/tlsthrd.c",
+		)
 		return sources, nil
 	},
 }
@@ -99,7 +135,70 @@ var libMinGW = Library{
 // compile these files.
 func makeMinGWExtraLibs(tmpdir, goarch string) []*compileJob {
 	var jobs []*compileJob
-	root := goenv.Get("TINYGOROOT")
+	for _, name := range mingwBaseLibs(goarch) {
+		jobs = append(jobs, mingwDefLibJob(tmpdir, goarch, mingwLibCommon(), name))
+	}
+	return jobs
+}
+
+// mingwImportLibs replaces each -lNAME flag that has a mingw-w64 .def file
+// (or a .mri list of them) with jobs that make the import libraries.
+func mingwImportLibs(tmpdir, goarch, libCommon string, ldflags []string) (flags []string, jobs []*compileJob) {
+	seen := map[string]bool{}
+	for _, name := range mingwBaseLibs(goarch) {
+		seen[name] = true
+	}
+	for i := 0; i < len(ldflags); i++ {
+		arg := ldflags[i : i+1]
+		name, ok := strings.CutPrefix(ldflags[i], "-l")
+		if ok && name == "" && i+1 < len(ldflags) {
+			i++
+			arg = ldflags[i-1 : i+1]
+			name = ldflags[i]
+		}
+		defs := mingwDefFiles(libCommon, strings.ToLower(name))
+		if !ok || len(defs) == 0 {
+			flags = append(flags, arg...)
+			continue
+		}
+		for _, def := range defs {
+			if !seen[def] {
+				seen[def] = true
+				jobs = append(jobs, mingwDefLibJob(tmpdir, goarch, libCommon, def))
+			}
+		}
+	}
+	return flags, jobs
+}
+
+// mingwDefFiles returns the .def files in libCommon for a library name.
+// A .mri file adds the libraries of its ADDLIB lines.
+func mingwDefFiles(libCommon, name string) []string {
+	for _, def := range []string{name + ".def", name + ".def.in"} {
+		if _, err := os.Stat(filepath.Join(libCommon, def)); err == nil {
+			return []string{def}
+		}
+	}
+	mri, err := os.ReadFile(filepath.Join(libCommon, name+".mri"))
+	if err != nil {
+		return nil
+	}
+	var defs []string
+	for _, line := range strings.Split(string(mri), "\n") {
+		lib, ok := strings.CutPrefix(strings.TrimSpace(line), "ADDLIB lib")
+		if ok {
+			defs = append(defs, mingwDefFiles(libCommon, strings.TrimSuffix(lib, ".a"))...)
+		}
+	}
+	return defs
+}
+
+func mingwLibCommon() string {
+	return filepath.Join(goenv.Get("TINYGOROOT"), "lib/mingw-w64/mingw-w64-crt/lib-common")
+}
+
+// mingwBaseLibs returns the .def files that every program links.
+func mingwBaseLibs(goarch string) []string {
 	var libs []string
 	if goarch == "386" {
 		libs = []string{
@@ -132,43 +231,46 @@ func makeMinGWExtraLibs(tmpdir, goarch string) []*compileJob {
 			"api-ms-win-crt-string-l1-1-0.def",
 			"api-ms-win-crt-time-l1-1-0.def",
 			"api-ms-win-crt-utility-l1-1-0.def",
+			// WaitOnAddress for the threads scheduler (Windows 8 and newer).
+			"api-ms-win-core-synch-l1-2-0.def",
 		}
 	}
-	for _, name := range libs {
-		outpath := filepath.Join(tmpdir, filepath.Base(name)+".lib")
-		inpath := filepath.Join(root, "lib/mingw-w64/mingw-w64-crt/lib-common/"+name)
-		job := &compileJob{
-			description: "create lib file " + inpath,
-			result:      outpath,
-			run: func(job *compileJob) error {
-				defpath := inpath
-				var archDef, emulation string
-				switch goarch {
-				case "386":
-					archDef = "-DDEF_I386"
-					emulation = "i386pe"
-				case "amd64":
-					archDef = "-DDEF_X64"
-					emulation = "i386pep"
-				case "arm64":
-					archDef = "-DDEF_ARM64"
-					emulation = "arm64pe"
-				default:
-					return fmt.Errorf("unsupported architecture for mingw-w64: %s", goarch)
+	return libs
+}
+
+// mingwDefLibJob returns a job that converts one .def file to a .lib file.
+func mingwDefLibJob(tmpdir, goarch, libCommon, name string) *compileJob {
+	outpath := filepath.Join(tmpdir, filepath.Base(name)+".lib")
+	inpath := filepath.Join(libCommon, name)
+	return &compileJob{
+		description: "create lib file " + inpath,
+		result:      outpath,
+		run: func(job *compileJob) error {
+			defpath := inpath
+			var archDef, emulation string
+			switch goarch {
+			case "386":
+				archDef = "-DDEF_I386"
+				emulation = "i386pe"
+			case "amd64":
+				archDef = "-DDEF_X64"
+				emulation = "i386pep"
+			case "arm64":
+				archDef = "-DDEF_ARM64"
+				emulation = "arm64pe"
+			default:
+				return fmt.Errorf("unsupported architecture for mingw-w64: %s", goarch)
+			}
+			if strings.HasSuffix(inpath, ".in") {
+				// .in files need to be preprocessed by a preprocessor (-E)
+				// first.
+				defpath = outpath + ".def"
+				err := runCCompiler("-E", "-x", "c", "-Wp,-w", "-P", archDef, "-DDATA", "-o", defpath, inpath, "-I"+goenv.Get("TINYGOROOT")+"/lib/mingw-w64/mingw-w64-crt/def-include/")
+				if err != nil {
+					return err
 				}
-				if strings.HasSuffix(inpath, ".in") {
-					// .in files need to be preprocessed by a preprocessor (-E)
-					// first.
-					defpath = outpath + ".def"
-					err := runCCompiler("-E", "-x", "c", "-Wp,-w", "-P", archDef, "-DDATA", "-o", defpath, inpath, "-I"+goenv.Get("TINYGOROOT")+"/lib/mingw-w64/mingw-w64-crt/def-include/")
-					if err != nil {
-						return err
-					}
-				}
-				return link("ld.lld", "-m", emulation, "-o", outpath, defpath)
-			},
-		}
-		jobs = append(jobs, job)
+			}
+			return link("ld.lld", "-m", emulation, "-o", outpath, defpath)
+		},
 	}
-	return jobs
 }

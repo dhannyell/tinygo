@@ -24,6 +24,7 @@ var (
 type Options struct {
 	GOOS                    string // environment variable
 	GOARCH                  string // environment variable
+	GOAMD64                 string // environment variable (only used with GOARCH=amd64)
 	GOARM                   string // environment variable (only used with GOARCH=arm)
 	GOMIPS                  string // environment variable (only used with GOARCH=mips and GOARCH=mipsle)
 	Directory               string // working dir, leave it unset to use the current working dir

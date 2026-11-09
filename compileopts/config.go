@@ -26,6 +26,7 @@ var libVersions = map[string]int{
 	"musl":         3,
 	"bdwgc":        2,
 	"wasmbuiltins": 1,
+	"mingw-w64":    1,
 }
 
 // Config keeps all configuration affecting the build in a single struct.
@@ -111,6 +112,7 @@ func (c *Config) BuildTags() []string {
 	tags = append(tags, []string{
 		"tinygo",                                     // that's the compiler
 		"purego",                                     // to get various crypto packages to work
+		"noasm",                                      // same, for packages such as golang.org/x/image/vector
 		"osusergo",                                   // to get os/user to work
 		"math_big_pure_go",                           // to get math/big to work
 		"gc." + c.GC(), "scheduler." + c.Scheduler(), // used inside the runtime package
@@ -224,7 +226,16 @@ func (c *Config) StackSize() uint64 {
 
 // MaxStackAlloc returns the size of the maximum allocation to put on the stack vs heap.
 func (c *Config) MaxStackAlloc() uint64 {
+	if c.Target.MaxStackAlloc != 0 {
+		return c.Target.MaxStackAlloc
+	}
 	if c.StackSize() >= 16*1024 {
+		// OS thread stacks end in a guard page. On windows/amd64, ___chkstk_ms
+		// checks large frames against the goroutine stack.
+		windowsTasks := c.Scheduler() == "tasks" && c.GOOS() == "windows" && c.GOARCH() == "amd64"
+		if (c.Scheduler() == "threads" || windowsTasks) && c.GOARCH() != "wasm" {
+			return max(1024, c.StackSize()/8)
+		}
 		return 1024
 	}
 

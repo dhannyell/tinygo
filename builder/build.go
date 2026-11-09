@@ -760,6 +760,16 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		linkerDependencies = append(linkerDependencies, job)
 	}
 
+	// Objects from cgo LDFLAGS may need an unwinder on windows-gnu.
+	if config.Target.Libc == "mingw-w64" && len(lprogram.LDFlags) > 0 {
+		job, unlock, err := libUnwind.load(config, tmpdir)
+		if err != nil {
+			return BuildResult{}, err
+		}
+		defer unlock()
+		linkerDependencies = append(linkerDependencies, job)
+	}
+
 	// Add jobs to compile extra files. These files are in C or assembly and
 	// contain things like the interrupt vector table and low level operations
 	// such as stack switching.
@@ -796,7 +806,16 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 
 	// Linker flags from CGo lines:
 	//     #cgo LDFLAGS: foo
-	if len(lprogram.LDFlags) > 0 {
+	if config.Target.Libc == "mingw-w64" {
+		cgoFlags := lprogram.LDFlags
+		if len(cgoFlags) > 0 {
+			// The mingw-w64 gcc driver links these by default and cgo code expects them.
+			cgoFlags = append(cgoFlags[:len(cgoFlags):len(cgoFlags)], "-luser32", "-lshell32")
+		}
+		flags, jobs := mingwImportLibs(tmpdir, config.GOARCH(), mingwLibCommon(), cgoFlags)
+		ldflags = append(ldflags, flags...)
+		linkerDependencies = append(linkerDependencies, jobs...)
+	} else if len(lprogram.LDFlags) > 0 {
 		ldflags = append(ldflags, lprogram.LDFlags...)
 	}
 
@@ -846,22 +865,29 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			}
 			ldflags = append(ldflags, "-mllvm", "-mcpu="+config.CPU())
 			ldflags = append(ldflags, "-mllvm", "-mattr="+config.Features()) // needed for MIPS softfloat
+			thinltoCache := filepath.Join(cacheDir, "thinlto")
+			if config.GOARCH() == "wasm" && speedLevel == 2 && sizeLevel == 0 {
+				// Saturating 64-bit integer code exceeds the default LTO inline limit on wasm32.
+				ldflags = append(ldflags, "-mllvm", "-inline-threshold=400")
+				// lld does not key its ThinLTO cache by -mllvm options.
+				thinltoCache += "-inline400"
+			}
 			switch config.LinkerFlavor() {
 			case "coff":
 				// Options for driving ld.lld in PE/COFF mode.
 				ldflags = append(ldflags,
 					"-Xlink=/opt:lldlto="+strconv.Itoa(speedLevel),
-					"--thinlto-cache-dir="+filepath.Join(cacheDir, "thinlto"))
+					"--thinlto-cache-dir="+thinltoCache)
 			case "darwin":
 				// Options for the ld64-compatible lld linker.
 				ldflags = append(ldflags,
 					"--lto-O"+strconv.Itoa(speedLevel),
-					"-cache_path_lto", filepath.Join(cacheDir, "thinlto"))
+					"-cache_path_lto", thinltoCache)
 			case "gnu":
 				// Options for the ELF linker.
 				ldflags = append(ldflags,
 					"--lto-O"+strconv.Itoa(speedLevel),
-					"--thinlto-cache-dir="+filepath.Join(cacheDir, "thinlto"),
+					"--thinlto-cache-dir="+thinltoCache,
 				)
 			default:
 				return fmt.Errorf("unknown linker flavor: %s", config.LinkerFlavor())

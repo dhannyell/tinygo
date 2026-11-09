@@ -53,6 +53,7 @@ func TestCompiler(t *testing.T) {
 		{"zeromap.go", "", ""},
 		{"generics.go", "", ""},
 		{"large.go", "", ""},
+		{"win64abi.go", "windows/amd64", ""},
 	}
 	if goMinor >= 20 {
 		tests = append(tests, testCase{"go1.20.go", "", ""})
@@ -69,7 +70,7 @@ func TestCompiler(t *testing.T) {
 		targetString := "wasm"
 		if tc.target != "" {
 			targetString = tc.target
-			name += "-" + tc.target
+			name += "-" + strings.ReplaceAll(tc.target, "/", "-")
 		}
 		if tc.scheduler != "" {
 			name += "-" + tc.scheduler
@@ -78,6 +79,10 @@ func TestCompiler(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			options := &compileopts.Options{
 				Target: targetString,
+			}
+			if goos, goarch, ok := strings.Cut(targetString, "/"); ok {
+				// A GOOS/GOARCH pair, not a target name.
+				options = &compileopts.Options{GOOS: goos, GOARCH: goarch}
 			}
 			if tc.scheduler != "" {
 				options.Scheduler = tc.scheduler
@@ -106,7 +111,7 @@ func TestCompiler(t *testing.T) {
 
 			outFilePrefix := tc.file[:len(tc.file)-3]
 			if tc.target != "" {
-				outFilePrefix += "-" + tc.target
+				outFilePrefix += "-" + strings.ReplaceAll(tc.target, "/", "-")
 			}
 			if tc.scheduler != "" {
 				outFilePrefix += "-" + tc.scheduler

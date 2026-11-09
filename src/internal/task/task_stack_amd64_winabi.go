@@ -68,11 +68,39 @@ func (s *state) archInit(r *calleeSavedRegs, fn uintptr, args unsafe.Pointer) {
 	r.r13 = uintptr(args)
 }
 
-func (s *state) resume() {
-	swapTask(s.sp, &systemStack)
+// stackLimit is read by ___chkstk_ms in task_stack_amd64_windows.S.
+//
+//go:extern tinygo_stackLimit
+var stackLimit uintptr
+
+// stackReserve is the part of a goroutine stack that large frames may not use,
+// so that the overflow report has room to run.
+const stackReserve = 4096
+
+func (s *state) limit() uintptr {
+	return uintptr(unsafe.Pointer(s.canaryPtr)) + stackReserve
 }
 
+//export tinygo_stackOverflow
+func stackOverflow() {
+	runtimeFatal("goroutine stack overflow")
+}
+
+func (s *state) resume() {
+	stackLimit = s.limit()
+	swapTask(s.sp, &systemStack)
+	stackLimit = 0
+}
+
+// cgoSysSP is the system stack pointer while a Go function that C code called
+// runs on the goroutine stack. See task_cgo_windows.go.
+var cgoSysSP uintptr
+
 func (s *state) pause() {
+	if cgoSysSP != 0 {
+		// The scheduler would overwrite the C frames on the system stack.
+		runtimeFatal("goroutine blocked in a Go function called from C")
+	}
 	newStack := systemStack
 	systemStack = 0
 	swapTask(newStack, &s.sp)

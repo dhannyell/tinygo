@@ -512,8 +512,15 @@ func (p *Package) parseFiles() ([]*ast.File, error) {
 			return nil, fmt.Errorf("failed to split CGO_CFLAGS: %w", err)
 		}
 		initialCFlags = append(initialCFlags, cgoCFlags...)
-		generated, headerCode, cflags, ldflags, accessedFiles, errs := cgo.Process(files, p.program.workingDir, p.ImportPath, p.program.fset, initialCFlags, p.program.config.GOOS())
+		generated, headerCode, cflags, ldflags, accessedFiles, exportHeader, errs := cgo.Process(files, p.program.workingDir, p.ImportPath, p.program.fset, initialCFlags, p.program.config.GOOS(), p.program.config.GOARCH(), p.program.config.BuildTags())
 		p.CFlags = append(initialCFlags, cflags...)
+		if exportHeader != "" {
+			dir, err := writeExportHeader(exportHeader)
+			if err != nil {
+				return nil, fmt.Errorf("failed to write _cgo_export.h: %w", err)
+			}
+			p.CFlags = append(p.CFlags, "-I"+dir)
+		}
 		p.CGoHeaders = headerCode
 		for path, hash := range accessedFiles {
 			p.FileHashes[path] = hash
@@ -805,4 +812,36 @@ func (p *Package) Import(to string) (*types.Package, error) {
 	} else {
 		return nil, errors.New("package not imported: " + to)
 	}
+}
+
+// writeExportHeader writes _cgo_export.h into a cache directory named by the
+// hash of the header, and returns that directory.
+func writeExportHeader(header string) (string, error) {
+	sum := sha512.Sum512_224([]byte(header))
+	dir := filepath.Join(goenv.Get("GOCACHE"), fmt.Sprintf("cgo-export-%x", sum))
+	path := filepath.Join(dir, "_cgo_export.h")
+	if _, err := os.Stat(path); err == nil {
+		return dir, nil
+	}
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		return "", err
+	}
+	// Write to a temporary file first, because other packages may write the
+	// same header at the same time.
+	f, err := os.CreateTemp(dir, "tmp-*.h")
+	if err != nil {
+		return "", err
+	}
+	_, err = f.WriteString(header)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return dir, nil
 }

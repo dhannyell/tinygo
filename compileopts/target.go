@@ -43,6 +43,7 @@ type TargetSpec struct {
 	Libc             string   `json:"libc,omitempty"`
 	AutoStackSize    *bool    `json:"automatic-stack-size,omitempty"` // Determine stack size automatically at compile time.
 	DefaultStackSize uint64   `json:"default-stack-size,omitempty"`   // Default stack size if the size couldn't be determined at compile time.
+	MaxStackAlloc    uint64   `json:"max-stack-alloc,omitempty"`      // Largest object put on the stack instead of the heap; 0 picks a default from the stack size.
 	CFlags           []string `json:"cflags,omitempty"`
 	LDFlags          []string `json:"ldflags,omitempty"`
 	LinkerScript     string   `json:"linkerscript,omitempty"`
@@ -276,6 +277,35 @@ func GetTargetSpecs() (map[string]*TargetSpec, error) {
 	return maps, nil
 }
 
+// amd64Level is the code generation setup of one GOAMD64 level.
+type amd64Level struct {
+	cpu      string
+	features string
+	tags     []string
+}
+
+var amd64V1 = amd64Level{
+	cpu:      "x86-64",
+	features: "+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87",
+	tags:     []string{"amd64.v1"},
+}
+
+// amd64Levels has the GOAMD64 levels. An empty value selects v1.
+var amd64Levels = map[string]amd64Level{
+	"":   amd64V1,
+	"v1": amd64V1,
+	"v2": {
+		cpu:      "x86-64-v2",
+		features: "+cmov,+crc32,+cx16,+cx8,+fxsr,+mmx,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87",
+		tags:     []string{"amd64.v1", "amd64.v2"},
+	},
+	"v3": {
+		cpu:      "x86-64-v3",
+		features: "+avx,+avx2,+bmi,+bmi2,+cmov,+crc32,+cx16,+cx8,+f16c,+fma,+fxsr,+lzcnt,+mmx,+movbe,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87,+xsave",
+		tags:     []string{"amd64.v1", "amd64.v2", "amd64.v3"},
+	},
+}
+
 // Load a target from environment variables (which default to
 // runtime.GOOS/runtime.GOARCH).
 func defaultTarget(options *Options) (*TargetSpec, error) {
@@ -298,8 +328,13 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 		spec.Features = "+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87"
 	case "amd64":
 		llvmarch = "x86_64"
-		spec.CPU = "x86-64"
-		spec.Features = "+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87"
+		level, ok := amd64Levels[options.GOAMD64]
+		if !ok {
+			return nil, fmt.Errorf("invalid GOAMD64=%s, must be v1, v2 or v3", options.GOAMD64)
+		}
+		spec.CPU = level.cpu
+		spec.Features = level.features
+		spec.BuildTags = append(spec.BuildTags, level.tags...)
 	case "arm":
 		spec.CPU = "generic"
 		spec.CFlags = append(spec.CFlags, "-fno-unwind-tables", "-fno-asynchronous-unwind-tables")
@@ -476,6 +511,13 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 				"--image-base", "0x400000",
 			)
 			spec.RTLib = "compiler-rt"
+			// The threads scheduler is opt-in. COFF links report undefined
+			// symbols in unused code, so add its files only when it is used.
+			if options.Scheduler == "threads" {
+				spec.ExtraFiles = append(spec.ExtraFiles,
+					"src/internal/futex/futex_windows.c",
+					"src/internal/task/task_threads.c")
+			}
 		case "arm64":
 			spec.LDFlags = append(spec.LDFlags,
 				"-m", "arm64pe",
@@ -489,7 +531,8 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 			"--no-dynamicbase",
 		)
 		spec.ExtraFiles = append(spec.ExtraFiles,
-			"src/runtime/runtime_windows.c")
+			"src/runtime/runtime_windows.c",
+			"src/runtime/math_windows.c")
 	case "wasm", "wasip1", "wasip2":
 		return nil, fmt.Errorf("GOOS=%s but GOARCH is unset. Please set GOARCH to wasm", options.GOOS)
 	default:

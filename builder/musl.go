@@ -170,6 +170,11 @@ var libMusl = Library{
 			globs = append([]string{"process/" + arch + "/*.s"}, globs...)
 		}
 
+		if arch == "x86_64" || arch == "i386" || arch == "aarch64" {
+			// Assembly memcpy, memmove and memset; the generic C versions are slow.
+			globs = append([]string{"string/" + arch + "/*.[sS]"}, globs...)
+		}
+
 		var sources []string
 		seenSources := map[string]struct{}{}
 		basepath := goenv.Get("TINYGOROOT") + "/lib/musl/src/"
@@ -195,6 +200,7 @@ var libMusl = Library{
 				}
 				// Make sure architecture specific files override generic files.
 				id := strings.ReplaceAll(relpath, "/"+arch+"/", "/")
+				id = strings.TrimSuffix(id, filepath.Ext(id)) // clone.s overrides clone.c
 				if _, ok := seenSources[id]; ok {
 					// Already seen this file, skipping this (generic) file.
 					continue

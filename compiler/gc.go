@@ -7,9 +7,34 @@ import (
 	"go/token"
 	"slices"
 
+	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
 )
+
+// Globals from this size on get a pointer layout, so the GC can scan only
+// their pointer words.
+const globalLayoutMinSize = 4096
+
+// addGlobalLayout stores the size and pointer layout of a large global in the
+// companion global "<name>$gclayout". transform.PreciseGlobals reads it.
+func (c *compilerContext) addGlobalLayout(g *ssa.Global, global llvm.Value) {
+	typ := global.GlobalValueType()
+	size := c.targetData.TypeAllocSize(typ)
+	if size < globalLayoutMinSize || global.IsThreadLocal() {
+		return
+	}
+	init := c.ctx.ConstStruct([]llvm.Value{
+		llvm.ConstInt(c.uintptrType, size, false),
+		c.createObjectLayout(typ, g.Pos()),
+	}, false)
+	companion := llvm.AddGlobal(c.mod, init.Type(), global.Name()+"$gclayout")
+	companion.SetInitializer(init)
+	companion.SetGlobalConstant(true)
+	companion.SetLinkage(llvm.InternalLinkage)
+	// Keep the companion until the transform, even if nothing refers to it.
+	llvmutil.AppendToGlobal(c.mod, "llvm.compiler.used", companion)
+}
 
 // Heap-allocate a buffer of the given size. This will typically call
 // runtime.alloc.

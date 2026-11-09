@@ -20,6 +20,8 @@ import (
 func (b *builder) defineIntrinsicFunction() {
 	name := b.fn.RelString(nil)
 	switch {
+	case isSimdFunction(b.fn):
+		b.defineSimdIntrinsic()
 	case name == "runtime.memcpy" || name == "runtime.memmove":
 		b.createMemoryCopyImpl()
 	case name == "runtime.memzero":
@@ -367,6 +369,37 @@ func (b *builder) defineMathBitsIntrinsic() bool {
 		}
 		k = b.createZExtOrTrunc(k, valueType)
 		result := b.createCall(llvmFnType, llvmFn, []llvm.Value{x, x, k}, "")
+		b.CreateRet(result)
+		return true
+	case "Mul64":
+		// LLVM folds the 32-bit split of math/bits into an i128 multiply,
+		// which wasm32 lowers to a __multi3 call. An empty asm hides the high
+		// halves from that fold, so the four multiplies stay inline.
+		// With wide-arithmetic, LLVM lowers the i128 fold to i64.mul_wide_u.
+		if b.GOARCH != "wasm" || strings.Contains(b.Features, "+wide-arithmetic") {
+			return false
+		}
+		b.createFunctionStart(true)
+		x := b.getValue(b.fn.Params[0], b.fn.Pos())
+		y := b.getValue(b.fn.Params[1], b.fn.Pos())
+		i64 := x.Type()
+		asmType := llvm.FunctionType(i64, []llvm.Type{i64}, false)
+		opaque := llvm.InlineAsm(asmType, "", "=r,0", false, false, 0, false)
+		mask := llvm.ConstInt(i64, 0xffffffff, false)
+		shift := llvm.ConstInt(i64, 32, false)
+		x0 := b.CreateAnd(x, mask, "")
+		x1 := b.CreateLShr(b.CreateCall(asmType, opaque, []llvm.Value{x}, ""), shift, "")
+		y0 := b.CreateAnd(y, mask, "")
+		y1 := b.CreateLShr(b.CreateCall(asmType, opaque, []llvm.Value{y}, ""), shift, "")
+		w0 := b.CreateMul(x0, y0, "")
+		t := b.CreateAdd(b.CreateMul(x1, y0, ""), b.CreateLShr(w0, shift, ""), "")
+		w1 := b.CreateAdd(b.CreateAnd(t, mask, ""), b.CreateMul(x0, y1, ""), "")
+		w2 := b.CreateLShr(t, shift, "")
+		hi := b.CreateAdd(b.CreateAdd(b.CreateMul(x1, y1, ""), w2, ""), b.CreateLShr(w1, shift, ""), "")
+		lo := b.CreateMul(x, y, "")
+		result := llvm.Undef(b.llvmFnType.ReturnType())
+		result = b.CreateInsertValue(result, hi, 0, "")
+		result = b.CreateInsertValue(result, lo, 1, "")
 		b.CreateRet(result)
 		return true
 	default:
