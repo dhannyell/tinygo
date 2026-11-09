@@ -282,6 +282,35 @@ func GetTargetSpecs() (map[string]*TargetSpec, error) {
 	return maps, nil
 }
 
+// amd64Level is the code generation setup of one GOAMD64 level.
+type amd64Level struct {
+	cpu      string
+	features string
+	tags     []string
+}
+
+var amd64V1 = amd64Level{
+	cpu:      "x86-64",
+	features: "+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87",
+	tags:     []string{"amd64.v1"},
+}
+
+// amd64Levels has the GOAMD64 levels. An empty value selects v1.
+var amd64Levels = map[string]amd64Level{
+	"":   amd64V1,
+	"v1": amd64V1,
+	"v2": {
+		cpu:      "x86-64-v2",
+		features: "+cmov,+crc32,+cx16,+cx8,+fxsr,+mmx,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87",
+		tags:     []string{"amd64.v1", "amd64.v2"},
+	},
+	"v3": {
+		cpu:      "x86-64-v3",
+		features: "+avx,+avx2,+bmi,+bmi2,+cmov,+crc32,+cx16,+cx8,+f16c,+fma,+fxsr,+lzcnt,+mmx,+movbe,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87,+xsave",
+		tags:     []string{"amd64.v1", "amd64.v2", "amd64.v3"},
+	},
+}
+
 // Load a target from environment variables (which default to
 // runtime.GOOS/runtime.GOARCH).
 func defaultTarget(options *Options) (*TargetSpec, error) {
@@ -304,8 +333,13 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 		spec.Features = "+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87"
 	case "amd64":
 		llvmarch = "x86_64"
-		spec.CPU = "x86-64"
-		spec.Features = "+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87"
+		level, ok := amd64Levels[options.GOAMD64]
+		if !ok {
+			return nil, fmt.Errorf("invalid GOAMD64=%s, must be v1, v2 or v3", options.GOAMD64)
+		}
+		spec.CPU = level.cpu
+		spec.Features = level.features
+		spec.BuildTags = append(spec.BuildTags, level.tags...)
 	case "arm":
 		spec.CPU = "generic"
 		spec.CFlags = append(spec.CFlags, "-fno-unwind-tables", "-fno-asynchronous-unwind-tables")

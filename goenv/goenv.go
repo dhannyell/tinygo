@@ -31,6 +31,8 @@ var Keys = []string{
 
 func init() {
 	switch Get("GOARCH") {
+	case "amd64":
+		Keys = append(Keys, "GOAMD64")
 	case "arm":
 		Keys = append(Keys, "GOARM")
 	case "mips", "mipsle":
@@ -117,6 +119,11 @@ func Get(name string) string {
 			return dir
 		}
 		return runtime.GOARCH
+	case "GOAMD64":
+		if goamd64 := os.Getenv("GOAMD64"); goamd64 != "" {
+			return goamd64
+		}
+		return "v1"
 	case "GOARM":
 		if goarm := os.Getenv("GOARM"); goarm != "" {
 			return goarm

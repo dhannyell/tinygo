@@ -6,8 +6,33 @@ import (
 	"io/fs"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 )
+
+func TestLoadTargetGOAMD64(t *testing.T) {
+	for _, test := range []struct{ level, cpu, tag string }{
+		{"", "x86-64", "amd64.v1"},
+		{"v1", "x86-64", "amd64.v1"},
+		{"v2", "x86-64-v2", "amd64.v2"},
+		{"v3", "x86-64-v3", "amd64.v3"},
+	} {
+		spec, err := LoadTarget(&Options{GOOS: "linux", GOARCH: "amd64", GOAMD64: test.level})
+		if err != nil {
+			t.Fatalf("GOAMD64=%q: %v", test.level, err)
+		}
+		if spec.CPU != test.cpu {
+			t.Errorf("GOAMD64=%q: CPU is %q, want %q", test.level, spec.CPU, test.cpu)
+		}
+		if !slices.Contains(spec.BuildTags, test.tag) {
+			t.Errorf("GOAMD64=%q: build tags %v do not have %q", test.level, spec.BuildTags, test.tag)
+		}
+	}
+
+	if _, err := LoadTarget(&Options{GOOS: "linux", GOARCH: "amd64", GOAMD64: "v4"}); err == nil {
+		t.Error("GOAMD64=v4 must be rejected")
+	}
+}
 
 func TestLoadTarget(t *testing.T) {
 	_, err := LoadTarget(&Options{Target: "arduino"})

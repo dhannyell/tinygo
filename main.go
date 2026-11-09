@@ -1924,6 +1924,7 @@ func main() {
 	options := &compileopts.Options{
 		GOOS:                    goenv.Get("GOOS"),
 		GOARCH:                  goenv.Get("GOARCH"),
+		GOAMD64:                 goenv.Get("GOAMD64"),
 		GOARM:                   goenv.Get("GOARM"),
 		GOMIPS:                  goenv.Get("GOMIPS"),
 		Target:                  *target,

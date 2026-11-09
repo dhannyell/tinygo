@@ -58,6 +58,8 @@ func TestClangAttributes(t *testing.T) {
 	for _, options := range []*compileopts.Options{
 		{GOOS: "linux", GOARCH: "386"},
 		{GOOS: "linux", GOARCH: "amd64"},
+		{GOOS: "linux", GOARCH: "amd64", GOAMD64: "v2"},
+		{GOOS: "linux", GOARCH: "amd64", GOAMD64: "v3"},
 		{GOOS: "linux", GOARCH: "arm", GOARM: "5,softfloat"},
 		{GOOS: "linux", GOARCH: "arm", GOARM: "6,softfloat"},
 		{GOOS: "linux", GOARCH: "arm", GOARM: "7,softfloat"},
@@ -76,6 +78,9 @@ func TestClangAttributes(t *testing.T) {
 		{GOOS: "windows", GOARCH: "arm64"},
 	} {
 		name := "GOOS=" + options.GOOS + ",GOARCH=" + options.GOARCH
+		if options.GOAMD64 != "" {
+			name += ",GOAMD64=" + options.GOAMD64
+		}
 		if options.GOARCH == "arm" {
 			name += ",GOARM=" + options.GOARM
 		}
