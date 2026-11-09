@@ -10,6 +10,29 @@ import (
 	"testing"
 )
 
+func TestConfigMaxStackAlloc(t *testing.T) {
+	tests := []struct {
+		name      string
+		target    *TargetSpec
+		stackSize uint64
+		want      uint64
+	}{
+		{"threads default stack", &TargetSpec{GOARCH: "amd64", Scheduler: "threads", DefaultStackSize: 64 * 1024}, 0, 8192},
+		{"threads large stack", &TargetSpec{GOARCH: "amd64", Scheduler: "threads", DefaultStackSize: 64 * 1024}, 1024 * 1024, 128 * 1024},
+		{"tasks has no guard page", &TargetSpec{GOOS: "linux", GOARCH: "amd64", Scheduler: "tasks", DefaultStackSize: 64 * 1024}, 0, 1024},
+		{"wasm has no guard page", &TargetSpec{GOARCH: "wasm", Scheduler: "threads", DefaultStackSize: 64 * 1024}, 0, 1024},
+		{"target override", &TargetSpec{GOARCH: "amd64", Scheduler: "threads", DefaultStackSize: 64 * 1024, MaxStackAlloc: 512}, 0, 512},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &Config{Options: &Options{StackSize: tc.stackSize}, Target: tc.target}
+			if got := config.MaxStackAlloc(); got != tc.want {
+				t.Fatalf("MaxStackAlloc() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadTargetGOAMD64(t *testing.T) {
 	for _, test := range []struct{ level, cpu, tag string }{
 		{"", "x86-64", "amd64.v1"},

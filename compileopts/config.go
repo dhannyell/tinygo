@@ -295,7 +295,14 @@ func (c *Config) StackSize() uint64 {
 
 // MaxStackAlloc returns the size of the maximum allocation to put on the stack vs heap.
 func (c *Config) MaxStackAlloc() uint64 {
+	if c.Target.MaxStackAlloc != 0 {
+		return c.Target.MaxStackAlloc
+	}
 	if c.StackSize() >= 16*1024 {
+		// OS thread stacks end in a guard page.
+		if c.Scheduler() == "threads" && c.GOARCH() != "wasm" {
+			return max(1024, c.StackSize()/8)
+		}
 		return 1024
 	}
 
