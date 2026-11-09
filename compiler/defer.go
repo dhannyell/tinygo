@@ -702,7 +702,11 @@ func (b *builder) createRunDefers() {
 
 			// Call real function.
 			fnType, fn := b.getFunction(callback)
-			b.createInvokeWithAnalysis(fnType, fn, forwardParams, "", b.functionMayUnwind(callback), b.functionMaySuspend(callback))
+			if exported && b.GOOS == "windows" && b.GOARCH == "amd64" {
+				b.createWin64Call(fnType, fn, forwardParams, b.getLLVMResultType(callback.Signature), isCgoFunction(callback, b.getFunctionInfo(callback)), b.functionMayUnwind(callback), b.functionMaySuspend(callback))
+			} else {
+				b.createInvokeWithAnalysis(fnType, fn, forwardParams, "", b.functionMayUnwind(callback), b.functionMaySuspend(callback))
+			}
 
 		case *ssa.MakeClosure:
 			// Get the real defer struct type and cast to it.

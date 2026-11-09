@@ -105,7 +105,8 @@ type compilerContext struct {
 	loaderPkg        *loader.Package // current package being compiled (for AST access)
 	packageDir       string          // directory for this package
 	runtimePkg       *types.Package
-	localTypeNames   typeutil.Map // *types.Named (synthetic local from generic instantiation) -> string
+	localTypeNames   typeutil.Map                 // *types.Named (synthetic local from generic instantiation) -> string
+	stackThunks      map[stackThunkKey]llvm.Value // see stackSwitchThunk
 }
 
 // newCompilerContext returns a new compiler context ready for use, most
@@ -129,6 +130,7 @@ func newCompilerContext(moduleName string, machine llvm.TargetMachine, config *C
 		functionABIs:     map[functionABIKey]functionABI{},
 		astComments:      map[string]*ast.CommentGroup{},
 		cgoImportDynamic: map[string]string{},
+		stackThunks:      map[stackThunkKey]llvm.Value{},
 	}
 
 	c.ctx = llvm.NewContext()
@@ -1330,6 +1332,9 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		b.blockInfo = blockInfo
 		// Normal functions have an entry block.
 		entryBlock = blockInfo[0].entry
+		if b.isCgoCallback() {
+			b.createCgoCallbackSwitch(entryBlock)
+		}
 	}
 	b.SetInsertPointAtEnd(entryBlock)
 
@@ -1346,13 +1351,24 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 	// Load function parameters
 	abi := b.getFunctionABI(b.fn.Signature, b.info.exported)
 	llvmParamIndex := 0
-	if abi.indirectResult {
+	if abi.indirectResult || (b.info.exported && b.win64Sret(b.fn.Signature)) {
 		b.indirectReturn = b.llvmFn.Param(llvmParamIndex)
 		b.indirectReturn.SetName("return")
 		llvmParamIndex++
 	}
 	for i, param := range b.fn.Params {
 		llvmType := abi.params[i].llvmType
+		if lowered, coerced := b.win64Aggregate(llvmType); lowered && b.info.exported {
+			llvmParam := b.llvmFn.Param(llvmParamIndex)
+			llvmParam.SetName(param.Name())
+			if coerced.IsNil() {
+				b.locals[param] = b.CreateLoad(llvmType, llvmParam, "")
+			} else {
+				b.locals[param] = b.win64Coerce(llvmParam, llvmType)
+			}
+			llvmParamIndex++
+			continue
+		}
 		if abi.params[i].indirect {
 			llvmParam := b.llvmFn.Param(llvmParamIndex)
 			llvmParam.SetName(param.Name())
@@ -1695,12 +1711,18 @@ func (b *builder) createReturn(results []ssa.Value, pos token.Pos) {
 			}
 		}
 		b.CreateRetVoid()
-	} else if len(results) == 1 {
-		b.CreateRet(b.getValue(results[0], pos))
 	} else {
-		result := llvm.ConstNull(b.llvmFn.GlobalValueType().ReturnType())
-		for i, value := range results {
-			result = b.CreateInsertValue(result, b.getValue(value, pos), i, "")
+		var result llvm.Value
+		if len(results) == 1 {
+			result = b.getValue(results[0], pos)
+		} else {
+			result = llvm.ConstNull(b.getLLVMResultType(b.fn.Signature))
+			for i, value := range results {
+				result = b.CreateInsertValue(result, b.getValue(value, pos), i, "")
+			}
+		}
+		if lowered, coerced := b.win64Aggregate(result.Type()); lowered && b.info.exported {
+			result = b.win64Coerce(result, coerced)
 		}
 		b.CreateRet(result)
 	}
@@ -2433,6 +2455,7 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 	var calleeType llvm.Type
 	var invokeTypecode, invokeReceiver llvm.Value
 	exported := false
+	cgoCall := false
 	if fn := instr.StaticCallee(); fn != nil {
 		calleeType, callee = b.getFunction(fn)
 		info := b.getFunctionInfo(fn)
@@ -2459,6 +2482,7 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			panic("StaticCallee returned an unexpected value")
 		}
 		exported = info.exported
+		cgoCall = isCgoFunction(fn, info)
 	} else if call, ok := instr.Value.(*ssa.Builtin); ok {
 		// Builtin function (append, close, delete, etc.).)
 		var params []llvm.Value
@@ -2509,6 +2533,9 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 		// This function takes a context parameter.
 		// Add it to the end of the parameter list.
 		params = append(params, context)
+	} else if b.GOOS == "windows" && b.GOARCH == "amd64" {
+		properties := b.callPropertiesFor(instr)
+		return b.createWin64Call(calleeType, callee, params, b.getLLVMResultType(instr.Signature()), cgoCall, properties&callMayUnwind != 0, properties&callMaySuspend != 0), nil
 	}
 
 	return b.createInvoke(calleeType, callee, params, "", instr), nil

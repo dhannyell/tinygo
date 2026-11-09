@@ -81,3 +81,96 @@ tinygo_swapTask:
 
     // Return into the new task, as if tinygo_swapTask was a regular call.
     ret
+
+.global tinygo_callOnStack
+.section .text.tinygo_callOnStack,"ax"
+tinygo_callOnStack:
+.seh_proc tinygo_callOnStack
+    // This function gets the following parameters:
+    // %rcx = fn, called with one argument
+    // %rdx = arg
+    // %r8  = new stack pointer, or 0 to stay on the current stack
+    // %r9  = oldSP *uintptr, written only when %r8 is not 0
+    pushq %rbp
+    .seh_pushreg %rbp
+    movq  %rsp, %rbp
+    .seh_setframe %rbp, 0
+    .seh_endprologue
+
+    testq %r8, %r8
+    jz    1f
+    movq  %rsp, (%r9)
+    movq  %r8, %rsp
+1:
+    // Align the stack and reserve the shadow space for fn.
+    andq  $-16, %rsp
+    subq  $32, %rsp
+    movq  %rcx, %rax
+    movq  %rdx, %rcx
+    callq *%rax
+
+    leaq  0(%rbp), %rsp
+    popq  %rbp
+    retq
+.seh_endproc
+
+// tinygo_stackLimit is the lowest address that a large frame may use on the
+// current goroutine stack, or 0 on the system stack.
+.section .bss.tinygo_stackLimit,"bw"
+.global  tinygo_stackLimit
+.p2align 3
+tinygo_stackLimit:
+    .quad 0
+
+.section .bss.tinygo_stackOverflowStack,"bw"
+.p2align 4
+tinygo_stackOverflowStack:
+    .zero 65536
+
+// ___chkstk_ms replaces the compiler-rt version. LLVM calls it for each frame
+// of 4096 bytes or more, with the frame size in %rax. On a goroutine stack it
+// checks the frame against tinygo_stackLimit; on the system stack it probes
+// the pages like the original. It keeps all registers.
+.global ___chkstk_ms
+.section .text.___chkstk_ms,"ax"
+___chkstk_ms:
+    pushq %rcx
+    pushq %rax
+    movq  tinygo_stackLimit(%rip), %rcx
+    testq %rcx, %rcx
+    jz    2f
+
+    // Goroutine stack: the pages are committed, so only check the bound.
+    leaq  24(%rsp), %rcx
+    subq  %rax, %rcx
+    jb    1f
+    cmpq  tinygo_stackLimit(%rip), %rcx
+    jb    1f
+    popq  %rax
+    popq  %rcx
+    ret
+1:
+    // Report the overflow on a separate stack: the frame that called this
+    // function is not aligned yet, and the reserve may be too small.
+    leaq  tinygo_stackOverflowStack+65536(%rip), %rsp
+    subq  $32, %rsp
+    callq tinygo_stackOverflow
+    ud2
+
+2:
+    // System stack: touch each page in order, so the guard page grows it.
+    leaq  24(%rsp), %rcx
+    cmpq  $0x1000, %rax
+    jb    4f
+3:
+    subq  $0x1000, %rcx
+    orl   $0, (%rcx)
+    subq  $0x1000, %rax
+    cmpq  $0x1000, %rax
+    ja    3b
+4:
+    subq  %rax, %rcx
+    orl   $0, (%rcx)
+    popq  %rax
+    popq  %rcx
+    ret
