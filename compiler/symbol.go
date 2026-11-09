@@ -58,6 +58,9 @@ const (
 	// Don't inline, just like the GCC noinline attribute. Signalled using
 	// //go:noinline.
 	inlineNone
+
+	// Inline at every direct call. Signalled using //go:alwaysinline.
+	inlineAlways
 )
 
 // Values for the allockind attribute. Source:
@@ -527,6 +530,10 @@ func (c *compilerContext) parsePragmas(info *functionInfo, f *ssa.Function) {
 			if c.checkDefinition(hasBody, comment, pragma) {
 				info.inline = inlineHint
 			}
+		case "//go:alwaysinline":
+			if c.checkDefinition(hasBody, comment, pragma) {
+				info.inline = inlineAlways
+			}
 		case "//go:noinline":
 			info.inline = inlineNone
 		case "//go:linkname", "//go:linknamestd":
@@ -597,14 +604,15 @@ func (c *compilerContext) parsePragmas(info *functionInfo, f *ssa.Function) {
 
 // flagPragmas are the function pragmas that do not accept parameters.
 var flagPragmas = map[string]bool{
-	"//go:inline":    true,
-	"//go:interrupt": true,
-	"//go:nobounds":  true,
-	"//go:noescape":  true,
-	"//go:noheap":    true,
-	"//go:noinline":  true,
-	"//go:noruntime": true,
-	"//go:variadic":  true,
+	"//go:alwaysinline": true,
+	"//go:inline":       true,
+	"//go:interrupt":    true,
+	"//go:nobounds":     true,
+	"//go:noescape":     true,
+	"//go:noheap":       true,
+	"//go:noinline":     true,
+	"//go:noruntime":    true,
+	"//go:variadic":     true,
 }
 
 // addPragmaError reports an error once per pragma, even when each generic

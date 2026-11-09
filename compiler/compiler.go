@@ -1247,6 +1247,9 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		// Add LLVM inline hint to functions with //go:inline pragma.
 		inline := b.ctx.CreateEnumAttribute(llvm.AttributeKindID("inlinehint"), 0)
 		b.llvmFn.AddFunctionAttr(inline)
+	case inlineAlways:
+		always := b.ctx.CreateEnumAttribute(llvm.AttributeKindID("alwaysinline"), 0)
+		b.llvmFn.AddFunctionAttr(always)
 	case inlineNone:
 		// Add LLVM attribute to always avoid inlining this function.
 		noinline := b.ctx.CreateEnumAttribute(llvm.AttributeKindID("noinline"), 0)

@@ -47,6 +47,12 @@ func withLinkageNameStd()
 func inlineFunc() {
 }
 
+// Function is inlined at every direct call.
+//
+//go:alwaysinline
+func alwaysInlineFunc() {
+}
+
 // Function should never be inlined, equivalent to GCC
 // __attribute__((noinline)).
 //
