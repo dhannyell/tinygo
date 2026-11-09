@@ -30,7 +30,7 @@ const (
 // builder.Library struct but that's hard to do since we want to know the
 // library path in advance in several places).
 var libVersions = map[string]int{
-	"musl":         3,
+	"musl":         4,
 	"bdwgc":        4,
 	"picolibc":     2,
 	"wasmbuiltins": 1,
