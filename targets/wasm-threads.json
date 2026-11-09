@@ -1,0 +1,24 @@
+{
+	"inherits":      ["wasm"],
+	"features":      "+atomics,+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types",
+	"build-tags":    ["tinygo.wasm.threads"],
+	"gc":            "boehm",
+	"max-stack-alloc": 32768,
+	"panic-unwind":  "none",
+	"cflags": [
+		"-matomics"
+	],
+	"ldflags": [
+		"--shared-memory",
+		"--no-check-features",
+		"--import-memory",
+		"--export-memory",
+		"--max-memory=1073741824",
+		"--export=__stack_pointer",
+		"--export-if-defined=__wasm_init_tls",
+		"--export-if-defined=__tls_size",
+		"--export-if-defined=__tls_align",
+		"--export-if-defined=__tls_base",
+		"-zstack-size=1048576"
+	]
+}
