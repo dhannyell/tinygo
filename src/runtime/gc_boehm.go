@@ -93,6 +93,13 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 		return alloc_zero(size, layout)
 	}
 
+	parallel := parallelAlloc
+	if parallel {
+		if size <= allocClassMax {
+			return allocCached(size)
+		}
+		gcAllocLock()
+	}
 	gcLock.Lock()
 	gcMallocs++
 	var ptr unsafe.Pointer
@@ -140,9 +147,16 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 			)
 		}
 	}
-	queued := boehmInvokeFinalizers()
+	var queued bool
+	if !parallel {
+		// A finalizer must not run on a worker.
+		queued = boehmInvokeFinalizers()
+	}
 	gcResumeWorld()
 	gcLock.Unlock()
+	if parallel {
+		gcAllocUnlock()
+	}
 	if queued {
 		wakeFinalizer()
 	}
@@ -169,6 +183,18 @@ func allocManual(size uintptr) unsafe.Pointer {
 		return alloc_zero(size, gclayout.NoPtrs.AsPtr())
 	}
 
+	if parallelAlloc {
+		gcAllocLock()
+		ptr := libgc_malloc_atomic_uncollectable(size)
+		gcAllocUnlock()
+		if ptr == nil {
+			runtimeFatal("gc: out of memory")
+			return nil
+		}
+		memzero(ptr, size)
+		return ptr
+	}
+
 	gcLock.Lock()
 	ptr := libgc_malloc_atomic_uncollectable(size)
 	queued := boehmInvokeFinalizers()
@@ -186,6 +212,13 @@ func allocManual(size uintptr) unsafe.Pointer {
 }
 
 func free(ptr unsafe.Pointer) {
+	if parallelAlloc {
+		gcAllocLock()
+		libgc_free(ptr)
+		gcAllocUnlock()
+		return
+	}
+
 	gcLock.Lock()
 	libgc_free(ptr)
 	queued := boehmInvokeFinalizers()

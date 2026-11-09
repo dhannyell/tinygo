@@ -171,3 +171,17 @@ GC_descr tinygo_runtime_bdwgc_make_descriptor(uintptr_t layout) {
     descriptor_cache_count++;
     return descriptor;
 }
+
+#if defined(__wasm_atomics__)
+// Workers cannot sleep in the middle of an allocation, so this lock spins.
+static volatile int alloc_lock_word;
+
+void tinygo_runtime_alloc_lock(void) {
+    while (__atomic_exchange_n(&alloc_lock_word, 1, __ATOMIC_ACQUIRE)) {
+    }
+}
+
+void tinygo_runtime_alloc_unlock(void) {
+    __atomic_store_n(&alloc_lock_word, 0, __ATOMIC_RELEASE);
+}
+#endif

@@ -88,6 +88,10 @@ var BoehmGC = Library{
 				"ptr_chck.c",
 			)
 		}
+		if strings.HasPrefix(target, "wasm") {
+			// The linker only pulls this file in for the wasm-threads target.
+			sources = append(sources, "../../src/runtime/gc_boehm_threads.c")
+		}
 		return sources, nil
 	},
 }
