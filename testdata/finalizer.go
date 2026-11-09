@@ -189,6 +189,37 @@ func testInteriorFinalizers() {
 	panic("interior finalizers did not run exactly once")
 }
 
+type closer interface{ close() }
+
+type handle struct{ x int }
+
+var closedX int
+
+func (h *handle) close() { closedX = h.x }
+
+// finalizeCloser takes an interface, so the call must carry the type code.
+func finalizeCloser(c closer) { c.close() }
+
+func closeOnGC[T closer](v T) { runtime.SetFinalizer(v, finalizeCloser) }
+
+//go:noinline
+func allocCloser() {
+	closeOnGC(&handle{x: 7})
+}
+
+// testInterfaceParam checks a finalizer whose parameter is an interface.
+func testInterfaceParam() {
+	allocCloser()
+	for i := 0; i < 100 && closedX == 0; i++ {
+		sink += scrubStack(40)
+		runtime.GC()
+		runtime.Gosched()
+	}
+	if closedX != 7 {
+		panic("finalizer: interface parameter finalizer did not see the object")
+	}
+}
+
 func main() {
 	if finalizerTestMode == "interior" {
 		testInteriorFinalizers()
@@ -220,5 +251,6 @@ func main() {
 	testFires()
 	testClear()
 	testReplace()
+	testInterfaceParam()
 	println("ok")
 }
