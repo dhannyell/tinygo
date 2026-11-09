@@ -2423,6 +2423,11 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			}
 		case (name == "golang.org/x/sys/cpu.cpuid" || name == "golang.org/x/sys/cpu.xgetbv") && fn.Blocks == nil && (b.GOARCH == "386" || b.GOARCH == "amd64"):
 			return b.createX86CPUInfo(name, instr), nil
+		case name == "runtime.SetFinalizer" && finalizerTakesInterface(instr.Args[1]):
+			// The runtime cannot read the parameter types of a func.
+			obj := b.getValue(instr.Args[0], getPos(instr))
+			finalizer := b.getValue(instr.Args[1], getPos(instr))
+			return b.createRuntimeInvoke("setFinalizerInterface", []llvm.Value{obj, finalizer}, ""), nil
 		case strings.HasPrefix(name, "syscall.rawSyscallNoError") || strings.HasPrefix(name, "golang.org/x/sys/unix.RawSyscallNoError"):
 			return b.createRawSyscallNoError(instr)
 		case name == "runtime.supportsRecover":

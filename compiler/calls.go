@@ -865,3 +865,17 @@ func (b *builder) collapseFormalParamInternal(t llvm.Type, fields []llvm.Value) 
 		return fields[0], fields[1:]
 	}
 }
+
+// finalizerTakesInterface reports whether v is a func converted to an
+// interface, with an interface type as its first parameter.
+func finalizerTakesInterface(v ssa.Value) bool {
+	mi, ok := v.(*ssa.MakeInterface)
+	if !ok {
+		return false
+	}
+	sig, ok := mi.X.Type().Underlying().(*types.Signature)
+	if !ok || sig.Params().Len() != 1 {
+		return false
+	}
+	return types.IsInterface(sig.Params().At(0).Type())
+}
