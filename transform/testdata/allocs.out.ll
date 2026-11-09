@@ -106,8 +106,36 @@ define { i32, { ptr, ptr } } @wrapInAggregate(ptr %p) {
   ret { i32, { ptr, ptr } } %result
 }
 
+define i32 @testTrackedContainer() {
+  %stackalloc1 = alloca [4 x i8], align 4
+  %stackalloc = alloca [4 x i8], align 4
+  store [4 x i8] zeroinitializer, ptr %stackalloc1, align 4
+  store i32 5, ptr %stackalloc1, align 4
+  store [4 x i8] zeroinitializer, ptr %stackalloc, align 4
+  call void @runtime.trackPointer(ptr %stackalloc, ptr undef)
+  store ptr %stackalloc1, ptr %stackalloc, align 4
+  %ptr = load ptr, ptr %stackalloc, align 4
+  %val = load i32, ptr %ptr, align 4
+  ret i32 %val
+}
+
+define i32 @testAggregateLoadContainer() {
+  %stackalloc1 = alloca [4 x i8], align 4
+  %stackalloc = alloca [8 x i8], align 4
+  store [4 x i8] zeroinitializer, ptr %stackalloc1, align 4
+  store i32 5, ptr %stackalloc1, align 4
+  store [8 x i8] zeroinitializer, ptr %stackalloc, align 4
+  store ptr %stackalloc1, ptr %stackalloc, align 4
+  %agg = load { ptr, i32 }, ptr %stackalloc, align 4
+  %ptr = extractvalue { ptr, i32 } %agg, 0
+  %val = load i32, ptr %ptr, align 4
+  ret i32 %val
+}
+
 declare ptr @escapeIntPtr(ptr)
 
 declare ptr @noescapeIntPtr(ptr nocapture)
 
 declare ptr @escapeIntPtrSometimes(ptr nocapture, ptr)
+
+declare void @runtime.trackPointer(ptr nocapture, ptr nocapture)

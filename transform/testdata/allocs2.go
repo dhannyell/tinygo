@@ -46,8 +46,8 @@ func main() {
 	s8 := []int{3, 5, 8} // OUT: escapes at line 47
 	callVariadic(s8...)
 
-	n4 := 3 // OUT: escapes at line 51
-	n5 := 7 // OUT: escapes at line 51
+	n4 := 3 // the closure only reads and writes through its context
+	n5 := 7
 	func() {
 		n4 = n5
 	}()
@@ -225,7 +225,7 @@ func escapingMultiReturnSlice() []byte {
 }
 
 func escapingMultiReturnStruct() *errT {
-	e := &errT{} // OUT: escapes at line 195
+	e := &errT{} // OUT: escapes at line 230
 	_, s := wrapStruct(e)
 	return s.p
 }
@@ -308,13 +308,13 @@ func escapingMultiReturnCall() {
 }
 
 func escapingMultiReturnClosure() func() error {
-	e := &errT{}           // OUT: escapes at line 312
+	e := &errT{}           // OUT: escapes at line 313
 	_, err := wrapError(e) // OUT: escapes at line 313
 	return func() error { return err }
 }
 
 func escapingMultiReturnPhi(cond bool) error {
-	e := &errT{} // OUT: escapes at line 318
+	e := &errT{} // OUT: escapes at line 322
 	_, err := wrapError(e)
 	if cond {
 		err = nil
@@ -363,4 +363,107 @@ func nonEscapingPointerFreeArray() [2]int {
 func minStringSelect(s string) byte {
 	b := make([]byte, 4) // OUT: escapes at line 365
 	return min(unsafe.String(&b[0], len(b)), s)[0]
+}
+
+// A pointer merged by a phi does not escape when the merge does not escape.
+func phiNoEscape(flip bool) float32 {
+	a := vector3{1, 2, 3}
+	b := vector3{4, 5, 6}
+	p := &a
+	if flip {
+		p = &b
+	}
+	return scaleVector3(p, 2)[0]
+}
+
+// A pointer stored into a local array does not escape when its loads do not.
+func storedPointerNoEscape(i int) int {
+	x, y := 1, 2
+	ptrs := [2]*int{&x, &y}
+	return *ptrs[i&1]
+}
+
+// An object allocated in a loop and carried to the next iteration must stay on
+// the heap: a stack slot would be shared by all iterations.
+func loopCarriedEscapes(n int) int {
+	var prev *int
+	for i := range n {
+		v := i // OUT: escapes at line 389
+		if prev != nil {
+			v += *prev
+		}
+		prev = &v
+	}
+	return *prev
+}
+
+// A local container that leaves the function lets the stored pointer escape.
+func containerPassedEscapes() {
+	x := 1 // OUT: escapes at line 404
+	ptrs := [1]*int{&x} // OUT: escapes at line 404
+	usePtrs(ptrs[:])
+}
+
+func usePtrs([]*int)
+
+type counter struct{ n int }
+
+func (c *counter) visit(i int) bool {
+	c.n += i
+	return true
+}
+
+var savedCounter *counter
+
+func (c *counter) save(int) bool {
+	savedCounter = c
+	return true
+}
+
+// visitAll only calls fn, so the context of fn does not leave it.
+func visitAll(n int, fn func(int) bool) {
+	for i := range n {
+		if !fn(i) {
+			return
+		}
+	}
+}
+
+// A method value passed to a function that only calls it does not escape.
+func calledCallbackNoEscape(n int) int {
+	var c counter
+	visitAll(n, c.visit)
+	return c.n
+}
+
+// The receiver escapes when the bound method stores it.
+func storingCallbackEscapes(n int) {
+	var c counter // OUT: escapes at line 419
+	visitAll(n, c.save)
+}
+
+type holder struct{ p *int }
+
+var savedInt *int
+
+func readHolder(h *holder) int {
+	return *h.p
+}
+
+func leakHeld(h *holder) {
+	savedInt = h.p
+}
+
+// A container passed to a function that only reads through it does not escape.
+func containerReadNoEscape() int {
+	x := 1
+	h := holder{&x}
+	return readHolder(&h)
+}
+
+// The stored pointer escapes when the callee copies it out of the container.
+func containerLeakedEscapes() {
+	x := 1 // OUT: escapes at line 454
+	h := holder{&x}
+	leakHeld(&h)
 }
