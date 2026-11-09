@@ -186,7 +186,7 @@ func (mv *memoryView) markExternal(llvmValue llvm.Value, mark uint8) error {
 		}
 	} else if !llvmValue.IsAConstantExpr().IsNil() {
 		switch llvmValue.Opcode() {
-		case llvm.IntToPtr, llvm.PtrToInt, llvm.BitCast, llvm.GetElementPtr:
+		case llvm.IntToPtr, llvm.PtrToInt, llvm.BitCast, llvm.GetElementPtr, llvm.Trunc:
 			err := mv.markExternal(llvmValue.Operand(0), mark)
 			if err != nil {
 				return err
@@ -1257,6 +1257,29 @@ func (v localValue) toLLVMValue(llvmType llvm.Type, mem *memoryView) (llvm.Value
 	return v.value, nil
 }
 
+// canHoldConstant reports whether rawValue.set can store llvmValue. It cannot
+// store pointer arithmetic such as the offsets in a relative lookup table.
+func canHoldConstant(llvmValue llvm.Value) bool {
+	if !llvmValue.IsAConstantExpr().IsNil() {
+		switch llvmValue.Opcode() {
+		case llvm.IntToPtr, llvm.PtrToInt, llvm.BitCast, llvm.GetElementPtr:
+			return canHoldConstant(llvmValue.Operand(0))
+		case llvm.ICmp:
+			return canHoldConstant(llvmValue.Operand(0)) && canHoldConstant(llvmValue.Operand(1))
+		default:
+			return false
+		}
+	}
+	if !llvmValue.IsAConstantStruct().IsNil() || !llvmValue.IsAConstantArray().IsNil() {
+		for i := range llvmValue.OperandsCount() {
+			if !canHoldConstant(llvmValue.Operand(i)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (r *runner) getValue(llvmValue llvm.Value) value {
 	if checks && llvmValue.IsNil() {
 		panic("nil llvmValue")
@@ -1272,7 +1295,7 @@ func (r *runner) getValue(llvmValue llvm.Value) value {
 			r.objects = append(r.objects, obj)
 			if !llvmValue.IsAGlobalVariable().IsNil() {
 				obj.size = uint32(r.targetData.TypeAllocSize(llvmValue.GlobalValueType()))
-				if initializer := llvmValue.Initializer(); !initializer.IsNil() {
+				if initializer := llvmValue.Initializer(); !initializer.IsNil() && canHoldConstant(initializer) {
 					// Treat the global as external if its initializer is only known at runtime.
 					buf := r.getValue(initializer)
 					if _, ok := buf.(localValue); !ok {
