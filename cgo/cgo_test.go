@@ -56,7 +56,7 @@ func TestCGo(t *testing.T) {
 			}
 
 			// Process the AST with CGo.
-			cgoFiles, _, _, _, _, _, cgoErrors := Process([]*ast.File{f}, "testdata", "main", fset, cflags, Flags{}, "linux", "arm", nil)
+			cgoFiles, _, _, _, _, _, exportHeader, cgoErrors := Process([]*ast.File{f}, "testdata", "main", fset, cflags, Flags{}, "linux", "arm", nil)
 
 			// Check the AST for type errors.
 			var typecheckErrors []error
@@ -89,6 +89,13 @@ func TestCGo(t *testing.T) {
 				buf.WriteString("// Type checking errors after CGo processing:\n")
 				for _, err := range typecheckErrors {
 					buf.WriteString(formatDiagnostic(err))
+				}
+				buf.WriteString("\n")
+			}
+			if exportHeader != "" {
+				buf.WriteString("// _cgo_export.h:\n")
+				for _, line := range strings.Split(strings.TrimRight(exportHeader, "\n"), "\n") {
+					buf.WriteString(strings.TrimRight("//\t"+line, " \t") + "\n")
 				}
 				buf.WriteString("\n")
 			}
@@ -129,7 +136,7 @@ func TestCGoPragmas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, _, _, _, _, _, errs := Process([]*ast.File{f}, "testdata", "main", fset, []string{"--target=armv6m-unknown-unknown-eabi"}, Flags{}, "linux", "arm", nil)
+	files, _, _, _, _, _, _, errs := Process([]*ast.File{f}, "testdata", "main", fset, []string{"--target=armv6m-unknown-unknown-eabi"}, Flags{}, "linux", "arm", nil)
 	if len(errs) != 0 {
 		t.Fatal(errs)
 	}
@@ -197,7 +204,7 @@ var _ C.size_t = C.strlen(nil)
 			if resourceDir := goenv.ClangResourceDir(true); resourceDir != "" {
 				cflags = append(cflags, "-resource-dir="+resourceDir)
 			}
-			cgoFiles, _, _, _, _, _, cgoErrors := Process([]*ast.File{f}, ".", "main", fset, cflags, Flags{}, "linux", tc.arch, nil)
+			cgoFiles, _, _, _, _, _, _, cgoErrors := Process([]*ast.File{f}, ".", "main", fset, cflags, Flags{}, "linux", tc.arch, nil)
 			if len(cgoErrors) != 0 {
 				t.Fatalf("cgo errors: %v", cgoErrors)
 			}
@@ -321,7 +328,7 @@ var _ C.unsupported_t
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, _, _, _, cgoErrors := Process([]*ast.File{f}, ".", "main", fset, []string{"--target=armv6m-unknown-unknown-eabi"}, Flags{}, "linux", "arm", nil)
+	_, _, _, _, _, _, _, cgoErrors := Process([]*ast.File{f}, ".", "main", fset, []string{"--target=armv6m-unknown-unknown-eabi"}, Flags{}, "linux", "arm", nil)
 	if len(cgoErrors) != 1 || !strings.Contains(cgoErrors[0].Error(), "unknown C type: _BitInt(17) (libclang type kind Unexposed)") {
 		t.Fatalf("unexpected cgo errors: %v", cgoErrors)
 	}
@@ -348,7 +355,7 @@ const Result = C.SHARED + C.C_ONLY + C.FOO_H
 	if err != nil {
 		t.Fatal(err)
 	}
-	generated, _, cflags, cxxflags, _, _, errs := Process(
+	generated, _, cflags, cxxflags, _, _, _, errs := Process(
 		[]*ast.File{f}, "testdata", "main", fset,
 		[]string{"--target=armv6m-unknown-unknown-eabi"},
 		Flags{CPPFlags: []string{"-DCPP_ENV"}, CFlags: []string{"-DC_ENV"}, CXXFlags: []string{"-DCXX_ENV"}},
@@ -403,7 +410,7 @@ var _ = C.identity(C.unsigned(2))
 	if err != nil {
 		t.Fatal(err)
 	}
-	generated, _, _, _, _, _, errs := Process(
+	generated, _, _, _, _, _, _, errs := Process(
 		[]*ast.File{f}, ".", "main", fset,
 		[]string{"--target=armv6m-unknown-unknown-eabi"}, Flags{}, "linux", "arm", nil,
 	)
@@ -480,6 +487,18 @@ func Test_cgoPackage_isEquivalentAST(t *testing.T) {
 			name:     "FuncDecl Type Results b nil",
 			a:        funcDeclA,
 			b:        funcDeclNoResults,
+			expected: false,
+		},
+		{
+			name:     "ParenExpr same",
+			a:        &ast.ParenExpr{X: fieldA.Type},
+			b:        &ast.ParenExpr{X: fieldA.Type},
+			expected: true,
+		},
+		{
+			name:     "ParenExpr different",
+			a:        &ast.ParenExpr{X: fieldA.Type},
+			b:        &ast.ParenExpr{X: fieldB.Type},
 			expected: false,
 		},
 	}

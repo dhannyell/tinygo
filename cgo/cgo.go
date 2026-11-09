@@ -266,8 +266,9 @@ func _Cgo___get_errno() error {
 // files, the CGo header snippets that should be compiled (for inline
 // functions), the C, C++, and linker flags from env and #cgo lines, and a map
 // of file hashes of the accessed C header files. If there is one or more error,
-// it returns these in the []error slice but still modifies the AST.
-func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cflags []string, env Flags, goos, goarch string, buildTags []string) ([]*ast.File, []string, []string, []string, []string, map[string][]byte, []error) {
+// it returns these in the []error slice but still modifies the AST. The string
+// result is the text of _cgo_export.h, or "" if the package exports nothing.
+func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cflags []string, env Flags, goos, goarch string, buildTags []string) ([]*ast.File, []string, []string, []string, []string, map[string][]byte, string, []error) {
 	p := &cgoPackage{
 		packageName:     files[0].Name.Name,
 		currentDir:      dir,
@@ -291,7 +292,7 @@ func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cfl
 	// Find the absolute path for this package.
 	packagePath, err := filepath.Abs(fset.File(files[0].Pos()).Name())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, []error{
+		return nil, nil, nil, nil, nil, nil, "", []error{
 			scanner.Error{
 				Pos: fset.Position(files[0].Pos()),
 				Msg: "cgo: cannot find absolute path: " + err.Error(), // TODO: wrap this error
@@ -384,6 +385,9 @@ func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cfl
 		p.cgoHeaders[i] = cgoHeader.String()
 	}
 
+	// Make the header before the walker replaces the C.X names.
+	exportHeader := p.exportHeader(files)
+
 	// Define CFlags that will be used while parsing the package.
 	// Disable _FORTIFY_SOURCE as it causes problems on macOS.
 	// Note that it is only disabled for memcpy (etc) calls made from Go, which
@@ -416,13 +420,16 @@ func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cfl
 		cf.names["_Bool"] = clangCursor{}
 		// Now read all the names (identifies) that C defines in the header
 		// snippet.
-		cf.readNames(p.cgoHeaders[i], cflagsForCGo, filepath.Base(fset.File(f.Pos()).Name()), func(names map[string]clangCursor) {
+		calls := cgoCallNames(f)
+		fragment := p.cgoHeaders[i] + macroAliasProbes(calls)
+		cf.readNames(fragment, cflagsForCGo, filepath.Base(fset.File(f.Pos()).Name()), func(names map[string]clangCursor) {
 			for _, name := range builtinAliases {
 				// Names such as C.int should not be obtained from C.
 				// This works around an issue in picolibc that has `#define int`
 				// in a header file.
 				delete(names, name)
 			}
+			cf.renameMacroFunctions(f, names, calls)
 			astutil.Apply(f, func(cursor *astutil.Cursor) bool {
 				return cf.walker(cursor, names)
 			}, nil)
@@ -448,7 +455,7 @@ func Process(files []*ast.File, dir, importPath string, fset *token.FileSet, cfl
 	// Print the newly generated in-memory AST, for debugging.
 	//ast.Print(fset, p.generated)
 
-	return p.cgoFiles, p.cgoHeaders, p.packageCFlags, p.packageCXXFlags, p.ldflags, p.visitedFiles, p.errors
+	return p.cgoFiles, p.cgoHeaders, p.packageCFlags, p.packageCXXFlags, p.ldflags, p.visitedFiles, exportHeader, p.errors
 }
 
 func (p *cgoPackage) newCGoFile(file *ast.File, index int) *cgoFile {
@@ -482,6 +489,73 @@ func (p *cgoPackage) makePathsAbsolute(args []string) {
 				args[i] = arg[:2] + filepath.Join(p.packageDir, path)
 			}
 		}
+	}
+}
+
+// macroAliasPrefix starts the names of the probe functions that
+// macroAliasProbes adds to the C fragment.
+const macroAliasPrefix = "__tinygo_cgo_alias_"
+
+// cgoCallNames returns the sorted names X of all C.X(...) calls in f.
+func cgoCallNames(f *ast.File) []string {
+	seen := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if x, ok := sel.X.(*ast.Ident); ok && x.Name == "C" {
+					seen[sel.Sel.Name] = true
+				}
+			}
+		}
+		return true
+	})
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// macroAliasProbes returns C code with one probe function for each called
+// name that is a macro. Clang expands the macro in the probe, so cgo can find
+// the function that the macro names (see macroFunctionName).
+func macroAliasProbes(calls []string) string {
+	var b strings.Builder
+	for _, name := range calls {
+		fmt.Fprintf(&b, "\n#ifdef %s\n__attribute__((unused)) static void %s%s(void) { (void)(%s); }\n#endif\n", name, macroAliasPrefix, name, name)
+	}
+	return b.String()
+}
+
+// renameMacroFunctions replaces C.X with C.Y in f when the macro X expands to
+// the name of the C function Y.
+func (f *cgoFile) renameMacroFunctions(file *ast.File, names map[string]clangCursor, calls []string) {
+	renames := map[string]string{}
+	for _, name := range calls {
+		if target, ok := f.macroFunctionName(names, name); ok {
+			renames[name] = target
+		}
+	}
+	if len(renames) == 0 {
+		return
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == "C" {
+				if target, ok := renames[sel.Sel.Name]; ok {
+					sel.Sel.Name = target
+				}
+			}
+		}
+		return true
+	})
+}
+
+// expandSrcDir replaces ${SRCDIR} in flags with the package directory.
+func (p *cgoPackage) expandSrcDir(flags []string) {
+	for i, flag := range flags {
+		flags[i] = strings.ReplaceAll(flag, "${SRCDIR}", p.packageDir)
 	}
 }
 
@@ -565,6 +639,7 @@ func (p *cgoPackage) parseCGoPreprocessorLines(text string, pos token.Pos) strin
 				p.addErrorAfter(pos, text[:lineStart+colon+1], "failed to parse flags in #cgo line: "+err.Error())
 				continue
 			}
+			p.expandSrcDir(flags)
 			if err := checkCompilerFlags(name, flags); err != nil {
 				p.addErrorAfter(pos, text[:lineStart+colon+1], err.Error())
 				continue
@@ -585,6 +660,7 @@ func (p *cgoPackage) parseCGoPreprocessorLines(text string, pos token.Pos) strin
 				p.addErrorAfter(pos, text[:lineStart+colon+1], "failed to parse flags in #cgo line: "+err.Error())
 				continue
 			}
+			p.expandSrcDir(flags)
 			if err := checkLinkerFlags(name, flags); err != nil {
 				p.addErrorAfter(pos, text[:lineStart+colon+1], err.Error())
 				continue
@@ -1214,6 +1290,12 @@ func (p *cgoPackage) isEquivalentAST(a, b ast.Node) bool {
 		return p.isEquivalentAST(node.X, b.X)
 	case *ast.StarExpr:
 		b, ok := b.(*ast.StarExpr)
+		if !ok {
+			return false
+		}
+		return p.isEquivalentAST(node.X, b.X)
+	case *ast.ParenExpr:
+		b, ok := b.(*ast.ParenExpr)
 		if !ok {
 			return false
 		}

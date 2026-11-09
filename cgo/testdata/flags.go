@@ -28,10 +28,14 @@ package main
 // This flag is not valid ldflags
 #cgo LDFLAGS: -does-not-exists
 
+#cgo CFLAGS: -I${SRCDIR}/include/srcdir
+#include "srcdir.h"
+
 */
 import "C"
 
 var (
 	_ = C.BAR
 	_ = C.FOO_H
+	_ = C.SRCDIR_H
 )

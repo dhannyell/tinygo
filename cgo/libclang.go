@@ -70,6 +70,7 @@ CXType tinygo_clang_getEnumDeclIntegerType(GoCXCursor c);
 unsigned tinygo_clang_Cursor_isAnonymous(GoCXCursor c);
 unsigned tinygo_clang_Cursor_isBitField(GoCXCursor c);
 unsigned tinygo_clang_Cursor_isMacroFunctionLike(GoCXCursor c);
+GoCXCursor tinygo_clang_findReferencedDecl(GoCXCursor c);
 
 // Fix some warnings on Windows ARM. Without the __declspec(dllexport), it gives warnings like this:
 //     In file included from _cgo_export.c:4:
@@ -438,6 +439,29 @@ func (f *cgoFile) isFunctionLikeMacro(c clangCursor) bool {
 		return false
 	}
 	return C.tinygo_clang_Cursor_isMacroFunctionLike(c) != 0
+}
+
+// macroFunctionName returns the name of the C function that the object-like
+// macro name expands to, for example GetModuleHandleA for GetModuleHandle in
+// windows.h. It reads the probe function from macroAliasProbes.
+func (f *cgoFile) macroFunctionName(names map[string]clangCursor, name string) (string, bool) {
+	c, ok := names[name]
+	if !ok || C.tinygo_clang_getCursorKind(c) != C.CXCursor_MacroDefinition || f.isFunctionLikeMacro(c) {
+		return "", false
+	}
+	probe, ok := names[macroAliasPrefix+name]
+	if !ok {
+		return "", false
+	}
+	decl := C.tinygo_clang_findReferencedDecl(probe)
+	if C.tinygo_clang_getCursorKind(decl) != C.CXCursor_FunctionDecl {
+		return "", false
+	}
+	target := getString(C.tinygo_clang_getCursorSpelling(decl))
+	if _, ok := names[target]; !ok {
+		return "", false
+	}
+	return target, true
 }
 
 // Get the macro value: the position in the source file and the string value of
