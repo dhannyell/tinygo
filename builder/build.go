@@ -976,19 +976,26 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			}
 			ldflags = append(ldflags, "-mllvm", "-mcpu="+config.CPU())
 			ldflags = append(ldflags, "-mllvm", "-mattr="+config.Features()) // needed for MIPS softfloat
+			thinltoCache := filepath.Join(cacheDir, "thinlto")
+			if config.GOARCH() == "wasm" && speedLevel == 2 && sizeLevel == 0 {
+				// Saturating 64-bit integer code exceeds the default LTO inline limit on wasm32.
+				ldflags = append(ldflags, "-mllvm", "-inline-threshold=400")
+				// lld does not key its ThinLTO cache by -mllvm options.
+				thinltoCache += "-inline400"
+			}
 			switch config.LinkerFlavor() {
 			case "coff":
 				// Options for driving ld.lld in PE/COFF mode.
 				ldflags = append(ldflags,
 					"-Xlink=/opt:lldlto="+strconv.Itoa(speedLevel),
-					"--thinlto-cache-dir="+filepath.Join(cacheDir, "thinlto"))
+					"--thinlto-cache-dir="+thinltoCache)
 			case "darwin":
 				// Options for the ld64-compatible lld linker.
 				ldflags = append(ldflags, "--lto-O"+strconv.Itoa(speedLevel))
 				// LLD 15 embeds cache paths in OSO symbols, unlike LLD 16+.
 				// Fixed in LLD 16 by https://reviews.llvm.org/D131624.
 				if !config.TrimPath() || llvmutil.Version() >= 16 {
-					ldflags = append(ldflags, "-cache_path_lto", filepath.Join(cacheDir, "thinlto"))
+					ldflags = append(ldflags, "-cache_path_lto", thinltoCache)
 				}
 				if config.TrimPath() {
 					ldflags = append(ldflags, "-oso_prefix", tmpdir+string(filepath.Separator))
@@ -997,7 +1004,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 				// Options for the ELF linker.
 				ldflags = append(ldflags,
 					"--lto-O"+strconv.Itoa(speedLevel),
-					"--thinlto-cache-dir="+filepath.Join(cacheDir, "thinlto"),
+					"--thinlto-cache-dir="+thinltoCache,
 				)
 			default:
 				return fmt.Errorf("unknown linker flavor: %s", config.LinkerFlavor())
