@@ -68,13 +68,19 @@ endif
 	@cp -rp lib/musl/src/unistd          build/release/tinygo/lib/musl/src
 	@cp -rp lib/musl/src/process         build/release/tinygo/lib/musl/src
 	@cp -rp lib/mingw-w64/mingw-w64-crt/crt/pseudo-reloc.c          build/release/tinygo/lib/mingw-w64/mingw-w64-crt/crt
+	@cp -rp lib/mingw-w64/mingw-w64-crt/crt/CRT_fp10.c              build/release/tinygo/lib/mingw-w64/mingw-w64-crt/crt
+	@cp -rp lib/mingw-w64/mingw-w64-crt/crt/tlsmcrt.c               build/release/tinygo/lib/mingw-w64/mingw-w64-crt/crt
+	@cp -rp lib/mingw-w64/mingw-w64-crt/crt/tlssup.c                build/release/tinygo/lib/mingw-w64/mingw-w64-crt/crt
+	@cp -rp lib/mingw-w64/mingw-w64-crt/crt/tlsthrd.c               build/release/tinygo/lib/mingw-w64/mingw-w64-crt/crt
+	@cp -rp lib/mingw-w64/mingw-w64-crt/math/fpclassify.c           build/release/tinygo/lib/mingw-w64/mingw-w64-crt/math
+	@cp -rp lib/mingw-w64/mingw-w64-crt/math/fpclassifyl.c          build/release/tinygo/lib/mingw-w64/mingw-w64-crt/math
+	@cp -rp lib/mingw-w64/mingw-w64-crt/math/isnan.c                build/release/tinygo/lib/mingw-w64/mingw-w64-crt/math
+	@cp -rp lib/mingw-w64/mingw-w64-crt/math/isnanl.c               build/release/tinygo/lib/mingw-w64/mingw-w64-crt/math
+	@cp -rp lib/mingw-w64-atexit.c                                  build/release/tinygo/lib
 	@cp -rp lib/mingw-w64/mingw-w64-crt/def-include                 build/release/tinygo/lib/mingw-w64/mingw-w64-crt
 	@cp -rp lib/mingw-w64/mingw-w64-crt/gdtoa                       build/release/tinygo/lib/mingw-w64/mingw-w64-crt
 	@cp -rp lib/mingw-w64/mingw-w64-crt/include                     build/release/tinygo/lib/mingw-w64/mingw-w64-crt
-	@cp -rp lib/mingw-w64/mingw-w64-crt/lib-common/api-ms-win-crt-* build/release/tinygo/lib/mingw-w64/mingw-w64-crt/lib-common
-	@cp -rp lib/mingw-w64/mingw-w64-crt/lib-common/advapi32.def.in  build/release/tinygo/lib/mingw-w64/mingw-w64-crt/lib-common
-	@cp -rp lib/mingw-w64/mingw-w64-crt/lib-common/kernel32.def.in  build/release/tinygo/lib/mingw-w64/mingw-w64-crt/lib-common
-	@cp -rp lib/mingw-w64/mingw-w64-crt/lib-common/msvcrt.def.in    build/release/tinygo/lib/mingw-w64/mingw-w64-crt/lib-common
+	@cp -rp lib/mingw-w64/mingw-w64-crt/lib-common                  build/release/tinygo/lib/mingw-w64/mingw-w64-crt
 	@cp -rp lib/mingw-w64/mingw-w64-crt/math/x86                    build/release/tinygo/lib/mingw-w64/mingw-w64-crt/math
 	@cp -rp lib/mingw-w64/mingw-w64-crt/misc                        build/release/tinygo/lib/mingw-w64/mingw-w64-crt
 	@cp -rp lib/mingw-w64/mingw-w64-crt/stdio                       build/release/tinygo/lib/mingw-w64/mingw-w64-crt
@@ -127,6 +133,10 @@ endif
 	@cp -rp lib/xtensa/include                                      build/release/tinygo/lib/xtensa
 	@cp -rp ${LLVM_PROJECTDIR}/compiler-rt/lib/builtins build/release/tinygo/lib/compiler-rt-builtins
 	@cp -rp ${LLVM_PROJECTDIR}/compiler-rt/LICENSE.TXT  build/release/tinygo/lib/compiler-rt-builtins
+	@mkdir -p build/release/tinygo/lib/libunwind
+	@cp -rp ${LLVM_PROJECTDIR}/libunwind/include     build/release/tinygo/lib/libunwind
+	@cp -rp ${LLVM_PROJECTDIR}/libunwind/src         build/release/tinygo/lib/libunwind
+	@cp -rp ${LLVM_PROJECTDIR}/libunwind/LICENSE.TXT build/release/tinygo/lib/libunwind
 	@cp -rp src                          build/release/tinygo/src
 	@cp -rp targets                      build/release/tinygo/targets
 

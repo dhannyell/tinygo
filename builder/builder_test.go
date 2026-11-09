@@ -222,6 +222,37 @@ func checkFeatureFlags(t *testing.T, targetFeatures, clangFeatures string) {
 	}
 }
 
+// Test that cgo -l flags on mingw-w64 become import libraries made from .def
+// files, and that other flags stay in place.
+func TestMinGWImportLibs(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"gdi32.def":         "",
+		"ws2_32.def.in":     "",
+		"kernel32.def.in":   "",
+		"winrt-a.def":       "",
+		"winrt-b.def":       "",
+		"runtimeobject.mri": "CREATE libruntimeobject.a\r\nADDLIB libwinrt-a.a\r\nADDLIB libwinrt-b.a\r\nSAVE\r\n",
+	}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in := []string{"-lGDI32", "-L/x", "-l", "ws2_32", "-lruntimeobject", "-lkernel32", "-lgdi32", "-lnosuch", "-l", "other"}
+	flags, jobs := mingwImportLibs("out", "amd64", dir, in)
+	if got, want := strings.Join(flags, " "), "-L/x -lnosuch -l other"; got != want {
+		t.Errorf("flags: got %q, want %q", got, want)
+	}
+	var libs []string
+	for _, job := range jobs {
+		libs = append(libs, filepath.Base(job.result))
+	}
+	if got, want := strings.Join(libs, " "), "gdi32.def.lib ws2_32.def.in.lib winrt-a.def.lib winrt-b.def.lib"; got != want {
+		t.Errorf("libs: got %q, want %q", got, want)
+	}
+}
+
 // This TestMain is necessary because TinyGo may also be invoked to run certain
 // LLVM tools in a separate process. Not capturing these invocations would lead
 // to recursive tests.
