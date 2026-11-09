@@ -455,6 +455,22 @@ func TestTrimPathTestPackages(t *testing.T) {
 	}
 }
 
+// TestArchsimd checks the archsimd operations against the output of gc.
+func TestArchsimd(t *testing.T) {
+	_, minor, err := goenv.GetGorootVersion()
+	if err != nil {
+		t.Fatal("could not get version:", err)
+	}
+	if runtime.GOARCH != "amd64" || minor < 27 {
+		t.Skip("archsimd needs amd64 and Go 1.27")
+	}
+	// go list reads the experiment from the environment.
+	t.Setenv("GOEXPERIMENT", "simd")
+	options := optionsFromTarget("", sema)
+	options.GOAMD64 = "v3"
+	runTestWithConfig("archsimd.go", t, options, nil, nil)
+}
+
 func TestBuild(t *testing.T) {
 	t.Parallel()
 

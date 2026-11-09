@@ -68,6 +68,7 @@ type Config struct {
 // available while compiling every function. It is not strictly read-only, but
 // must not contain function-dependent data such as an IR builder.
 type compilerContext struct {
+	usesSimdVectors bool
 	*Config
 	DumpSSA          bool
 	mod              llvm.Module
@@ -403,6 +404,8 @@ func CompilePackage(moduleName string, pkg *loader.Package, ssaPkg *ssa.Package,
 		)
 	}
 
+	c.relaxSimdAlignment()
+
 	return c.mod, c.diagnostics
 }
 
@@ -478,6 +481,9 @@ func (c *compilerContext) makeLLVMType(goType types.Type) llvm.Type {
 	case *types.Interface:
 		return c.getLLVMRuntimeType("_interface")
 	case *types.Named:
+		if vector, ok := c.simdVectorType(typ); ok {
+			return vector
+		}
 		if st, ok := typ.Underlying().(*types.Struct); ok {
 			// Structs are a special case. While other named types are ignored
 			// in LLVM IR, named structs are implemented as named structs in
@@ -958,6 +964,9 @@ func (c *compilerContext) createPackage(irbuilder llvm.Builder, pkg *ssa.Package
 					continue
 				}
 				if fn.Blocks == nil {
+					if isSimdFunction(fn) {
+						newBuilder(c, irbuilder, fn).defineSimdIntrinsic()
+					}
 					continue // external function
 				}
 				if fn.Synthetic != "" && fn.Synthetic != "package initializer" {
@@ -1239,6 +1248,12 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		// module). But LTO generally optimizes such functions away. Therefore,
 		// exported functions must be explicitly marked as used.
 		llvmutil.AppendToGlobal(b.mod, "llvm.used", b.llvmFn)
+	}
+
+	if isSimdFunction(b.fn) {
+		// A call around one vector instruction costs more than the instruction.
+		always := b.ctx.CreateEnumAttribute(llvm.AttributeKindID("alwaysinline"), 0)
+		b.llvmFn.AddFunctionAttr(always)
 	}
 
 	// Some functions have a pragma controlling the inlining level.
@@ -2378,6 +2393,8 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			if b.GOOS != "darwin" {
 				return b.createSyscall(instr)
 			}
+		case strings.HasPrefix(name, "(simd/archsimd.X86Features).") && isSimdFeature(fn.Name()):
+			return b.simdFeature(fn.Name()), nil
 		case name == "syscall.syscalln":
 			if b.GOOS == "windows" {
 				return b.createSyscalln(instr)

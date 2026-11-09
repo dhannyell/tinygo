@@ -17,6 +17,10 @@ type stdSizes struct {
 }
 
 func (s *stdSizes) Alignof(T types.Type) int64 {
+	if array, ok := simdElem(T); ok {
+		return array.Len() * s.Sizeof(array.Elem())
+	}
+
 	// For arrays and structs, alignment is defined in terms
 	// of alignment of the elements and fields, respectively.
 	switch t := T.Underlying().(type) {

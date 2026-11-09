@@ -20,6 +20,8 @@ import (
 func (b *builder) defineIntrinsicFunction() {
 	name := b.fn.RelString(nil)
 	switch {
+	case isSimdFunction(b.fn):
+		b.defineSimdIntrinsic()
 	case name == "runtime.memcpy" || name == "runtime.memmove":
 		b.createMemoryCopyImpl()
 	case name == "runtime.memzero":
