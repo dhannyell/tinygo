@@ -34,9 +34,27 @@ const (
 )
 
 var (
-	gcLock    task.PMutex
+	gcLock    boehmLock
 	gcMallocs uint64
 )
+
+// boehmLock serializes the calls into bdwgc. With threads it also takes the
+// lock of the workers, because they allocate while the main thread runs.
+type boehmLock struct{ m task.PMutex }
+
+func (l *boehmLock) Lock() {
+	l.m.Lock()
+	if parallelAlloc {
+		gcAllocLock()
+	}
+}
+
+func (l *boehmLock) Unlock() {
+	if parallelAlloc {
+		gcAllocUnlock()
+	}
+	l.m.Unlock()
+}
 
 type boehmFinalizer struct {
 	next   *boehmFinalizer
@@ -69,6 +87,7 @@ func gcInit()
 func gcCallback() {
 	// Mark globals and all stacks, and stop the world if we're using threading.
 	gcMarkReachable()
+	markThreadStacks()
 }
 
 func markRoots(start, end uintptr) {
@@ -98,7 +117,7 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 		if size <= allocClassMax {
 			return allocCached(size)
 		}
-		gcAllocLock()
+		gcAllocPoint()
 	}
 	gcLock.Lock()
 	gcMallocs++
@@ -154,9 +173,6 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 	}
 	gcResumeWorld()
 	gcLock.Unlock()
-	if parallel {
-		gcAllocUnlock()
-	}
 	if queued {
 		wakeFinalizer()
 	}
@@ -235,12 +251,17 @@ func freeTaskStack(ptr uintptr) {
 }
 
 func GC() {
+	// The workers must stop before the lock, because a worker can wait on it.
+	if !gcStopWorld() {
+		return
+	}
 	gcLock.Lock()
 	libgc_gcollect()
 	finalizersSinceGC = 0
 	queued := boehmInvokeFinalizers()
 	gcResumeWorld()
 	gcLock.Unlock()
+	gcStartWorld()
 	if queued {
 		wakeFinalizer()
 	}
@@ -382,19 +403,12 @@ func boehmInvokeFinalizers() bool {
 func finalizerPressureGC() bool {
 	gcLock.Lock()
 	trigger := finalizerGCTrigger(numFinalizers)
-	if trigger == 0 || finalizersSinceGC < trigger {
-		gcLock.Unlock()
-		return false
-	}
-	libgc_gcollect()
-	finalizersSinceGC = 0
-	queued := boehmInvokeFinalizers()
-	gcResumeWorld()
+	due := trigger != 0 && finalizersSinceGC >= trigger
 	gcLock.Unlock()
-	if queued {
-		wakeFinalizer()
+	if due {
+		GC()
 	}
-	return true
+	return due
 }
 
 func wakeFinalizer() {

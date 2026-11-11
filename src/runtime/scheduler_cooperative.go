@@ -100,6 +100,9 @@ func scheduleTaskNoWake(t *task.Task) {
 }
 
 func Gosched() {
+	if workerYield() {
+		return
+	}
 	runqueue.Push(task.Current())
 	task.Pause()
 }

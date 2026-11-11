@@ -1,0 +1,3 @@
+wasm threads gc: bad walks: 0
+collections while workers ran: true
+heap stable: true
